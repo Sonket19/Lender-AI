@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Founder Interview</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 800px;
+            width: 100%;
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 { font-size: 28px; margin-bottom: 10px; }
+        .header p { opacity: 0.9; }
+        .chat-container {
+            height: 500px;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f7f7f7;
+        }
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: flex-start;
+        }
+        .message.ai { flex-direction: row; }
+        .message.founder { flex-direction: row-reverse; }
+        .message-content {
+            max-width: 70%;
+            padding: 15px 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .message.ai .message-content {
+            background: white;
+            margin-left: 10px;
+        }
+        .message.founder .message-content {
+            background: #667eea;
+            color: white;
+            margin-right: 10px;
+        }
+        .input-area {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+        .input-area input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        .input-area input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        .input-area button {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .input-area button:hover {
+            background: #5568d3;
+        }
+        .complete-btn {
+            margin: 20px;
+            width: calc(100% - 40px);
+            padding: 15px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .complete-btn:hover {
+            background: #218838;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1 id="company-name">Investment Interview</h1>
+            <p id="founder-name">Welcome</p>
+        </div>
+        <div class="chat-container" id="chat">
+            <!-- Messages will be added here -->
+        </div>
+        <div class="input-area">
+            <input type="text" id="message-input" placeholder="Type your message...">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+        <button class="complete-btn" onclick="completeInterview()">Complete Interview</button>
+    </div>
+
+    <script>
+        const token = window.location.pathname.split('/').pop();
+        const API_URL = 'https://your-api-url.com';
+
+        async function initInterview() {
+            try {
+                const response = await fetch(`${API_URL}/interview/${token}`);
+                const data = await response.json();
+                
+                document.getElementById('company-name').textContent = data.company_name;
+                document.getElementById('founder-name').textContent = `Hello, ${data.founder_name}`;
+                
+                // Load chat history
+                data.chat_history.forEach(msg => {
+                    addMessage(msg.message, msg.role);
+                });
+                
+                // Initial AI greeting
+                if (data.chat_history.length === 0) {
+                    setTimeout(() => sendMessage('start'), 1000);
+                }
+            } catch (error) {
+                alert('Error loading interview: ' + error.message);
+            }
+        }
+
+        async function sendMessage(text = null) {
+            const input = document.getElementById('message-input');
+            const message = text || input.value.trim();
+            
+            if (!message) return;
+            
+            if (!text) {
+                addMessage(message, 'founder');
+                input.value = '';
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/interview/${token}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: message })
+                });
+                
+                const data = await response.json();
+                addMessage(data.response, 'ai');
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        function addMessage(text, role) {
+            const chat = document.getElementById('chat');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            messageDiv.innerHTML = `<div class="message-content">${text}</div>`;
+            chat.appendChild(messageDiv);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        async function completeInterview() {
+            if (!confirm('Are you sure you want to complete the interview?')) return;
+            
+            try {
+                await fetch(`${API_URL}/interview/${token}/complete`, {
+                    method: 'POST'
+                });
+                
+                alert('Thank you! Your interview has been completed.');
+                window.location.href = '/thank-you';
+            } catch (error) {
+                alert('Error completing interview: ' + error.message);
+            }
+        }
+
+        // Enter key to send
+        document.getElementById('message-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // Initialize on load
+        initInterview();
+    </script>
+</body>
+</html>
