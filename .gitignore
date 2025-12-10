@@ -16,6 +16,9 @@ Frontend/node_modules/
 Frontend/.next/
 Frontend/.vercel/
 Frontend/.env.local
+Frontend/deploy-frontend.ps1
+Frontend/Dockerfile
+Frontend/frontend-url.txt
 
 # ========== IDE ==========
 .vscode/
