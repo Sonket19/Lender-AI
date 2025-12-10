@@ -83,10 +83,11 @@ const FileInput = ({
 export default function FileUpload({ onGenerate }: FileUploadProps) {
     const [activeTab, setActiveTab] = useState("pdf");
     const [pitchDeck, setPitchDeck] = useState<File | null>(null);
+    const [cmaFile, setCmaFile] = useState<File | null>(null);
     const [videoFile, setVideoFile] = useState<File | null>(null);
     const [audioFile, setAudioFile] = useState<File | null>(null);
     const [textInput, setTextInput] = useState('');
-    const [processingMode, setProcessingMode] = useState<'fast' | 'research'>('fast');
+    const [processingMode, setProcessingMode] = useState<'fast' | 'research'>('research');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const { toast } = useToast();
@@ -94,10 +95,12 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
     const handlePitchDeckChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         if (event.target.files && event.target.files[0]) {
             setPitchDeck(event.target.files[0]);
-            // Clear other inputs
-            setVideoFile(null);
-            setAudioFile(null);
-            setTextInput('');
+        }
+    };
+
+    const handleCmaChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        if (event.target.files && event.target.files[0]) {
+            setCmaFile(event.target.files[0]);
         }
     };
 
@@ -125,9 +128,10 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
         setActiveTab(value);
         // Optional: Clear inputs when switching tabs? 
         // User requested "only one input at a time", so clearing might be safer to avoid confusion
-        setPitchDeck(null);
-        setVideoFile(null);
-        setAudioFile(null);
+        // User requested "only one input at a time", so clearing might be safer to avoid confusion
+        // setPitchDeck(null);
+        // setVideoFile(null);
+        // setAudioFile(null);
         setTextInput('');
         setError(null);
     };
@@ -137,13 +141,13 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
 
         // Validate based on active tab
         let hasInput = false;
-        if (activeTab === 'pdf' && pitchDeck) hasInput = true;
-        if (activeTab === 'video' && videoFile) hasInput = true;
-        if (activeTab === 'audio' && audioFile) hasInput = true;
-        if (activeTab === 'text' && textInput.trim()) hasInput = true;
+        if (activeTab === 'pdf' && pitchDeck && cmaFile) hasInput = true;
+        // if (activeTab === 'video' && videoFile) hasInput = true;
+        // if (activeTab === 'audio' && audioFile) hasInput = true;
+        // if (activeTab === 'text' && textInput.trim()) hasInput = true;
 
         if (!hasInput) {
-            setError(`Please provide a ${activeTab === 'text' ? 'text input' : 'file'} to upload.`);
+            setError(`Please provide both a Pitch Deck and CMA Report.`);
             return;
         }
 
@@ -152,14 +156,10 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
         const formData = new FormData();
 
         // Append correct input based on active tab
-        if (activeTab === 'pdf' && pitchDeck) {
-            formData.append('file', pitchDeck);
-        } else if (activeTab === 'video' && videoFile) {
-            formData.append('file', videoFile);
-        } else if (activeTab === 'audio' && audioFile) {
-            formData.append('file', audioFile);
-        } else if (activeTab === 'text' && textInput.trim()) {
-            formData.append('text_input', textInput);
+        // Append files
+        if (activeTab === 'pdf') {
+            if (pitchDeck) formData.append('file', pitchDeck);
+            if (cmaFile) formData.append('cma_report', cmaFile);
         }
 
         try {
@@ -196,6 +196,7 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
         }
     };
 
+
     return (
         <div className="space-y-6">
             <div className="text-center">
@@ -204,125 +205,45 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
                 </div>
                 <h2 className="font-headline text-2xl font-bold">Create New Analysis</h2>
                 <p className="text-sm text-muted-foreground mt-2">
-                    Upload a pitch deck, video, audio, or text to generate a comprehensive startup analysis.
+                    Upload a pitch deck (PDF) and CMA Report (PDF/Excel) to generate a comprehensive startup analysis.
                 </p>
             </div>
 
             <div className="space-y-6">
-                {/* Processing Mode Selection */}
-                <div className="space-y-3 p-4 border rounded-lg bg-secondary/20">
-                    <Label className="text-base font-semibold">Processing Mode</Label>
-                    <div className="grid grid-cols-2 gap-3">
-                        <button
-                            type="button"
-                            onClick={() => setProcessingMode('fast')}
-                            className={`relative flex items-start gap-3 p-4 border-2 rounded-lg transition-all ${processingMode === 'fast'
-                                ? 'border-primary bg-primary/5'
-                                : 'border-border hover:border-primary/50'
-                                }`}
-                        >
-                            <div className="mt-0.5">
-                                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${processingMode === 'fast' ? 'border-primary' : 'border-muted-foreground'
-                                    }`}>
-                                    {processingMode === 'fast' && (
-                                        <div className="w-3 h-3 rounded-full bg-primary"></div>
-                                    )}
-                                </div>
-                            </div>
-                            <div className="flex-1 text-left">
-                                <div className="flex items-center gap-2 mb-1">
-                                    <Zap className="w-4 h-4 text-orange-500" />
-                                    <span className="font-semibold">Fast</span>
-                                </div>
-                                <p className="text-xs text-muted-foreground">
-                                    Quick analysis (~1 min). Excludes risk & investment tabs.
-                                </p>
-                            </div>
-                        </button>
 
-                        <button
-                            type="button"
-                            onClick={() => setProcessingMode('research')}
-                            className={`relative flex items-start gap-3 p-4 border-2 rounded-lg transition-all ${processingMode === 'research'
-                                ? 'border-primary bg-primary/5'
-                                : 'border-border hover:border-primary/50'
-                                }`}
-                        >
-                            <div className="mt-0.5">
-                                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${processingMode === 'research' ? 'border-primary' : 'border-muted-foreground'
-                                    }`}>
-                                    {processingMode === 'research' && (
-                                        <div className="w-3 h-3 rounded-full bg-primary"></div>
-                                    )}
-                                </div>
-                            </div>
-                            <div className="flex-1 text-left">
-                                <div className="flex items-center gap-2 mb-1">
-                                    <Search className="w-4 h-4 text-blue-500" />
-                                    <span className="font-semibold">Research</span>
-                                </div>
-                                <p className="text-xs text-muted-foreground">
-                                    Detailed analysis (~2-3 min). Includes all tabs.
-                                </p>
-                            </div>
-                        </button>
-                    </div>
-                </div>
 
-                {/* Input Type Tabs */}
+                {/* Input Type Tabs - REMOVED, strictly PDF + CMA */}
                 <Tabs defaultValue="pdf" value={activeTab} onValueChange={handleTabChange} className="w-full">
-                    <TabsList className="grid w-full grid-cols-4 mb-4">
+                    <TabsList className="grid w-full grid-cols-1 mb-4">
                         <TabsTrigger value="pdf" className="flex items-center gap-2">
-                            <FileText className="w-4 h-4" /> PDF
-                        </TabsTrigger>
-                        <TabsTrigger value="video" className="flex items-center gap-2">
-                            <Video className="w-4 h-4" /> Video
-                        </TabsTrigger>
-                        <TabsTrigger value="audio" className="flex items-center gap-2">
-                            <Mic className="w-4 h-4" /> Audio
-                        </TabsTrigger>
-                        <TabsTrigger value="text" className="flex items-center gap-2">
-                            <Type className="w-4 h-4" /> Text
+                            <FileText className="w-4 h-4" /> Required Files
                         </TabsTrigger>
                     </TabsList>
 
-                    <TabsContent value="pdf" className="mt-0">
+                    <TabsContent value="pdf" className="mt-0 space-y-4">
                         <FileInput
                             id="pitch-deck-upload"
-                            label="Upload Pitch Deck (PDF)"
+                            label="1. Upload Pitch Deck (PDF)"
                             icon={<FileText className="w-8 h-8 text-primary" />}
                             file={pitchDeck}
                             onFileChange={handlePitchDeckChange}
                             accept=".pdf"
                         />
-                    </TabsContent>
 
-                    <TabsContent value="video" className="mt-0">
                         <FileInput
-                            id="video-upload"
-                            label="Upload Pitch Video (MP4, MOV)"
-                            icon={<Video className="w-8 h-8 text-primary" />}
-                            file={videoFile}
-                            onFileChange={handleVideoChange}
-                            accept="video/mp4,video/quicktime"
+                            id="cma-report-upload"
+                            label="2. Upload CMA Report (PDF or Excel)"
+                            icon={<FileText className="w-8 h-8 text-blue-500" />}
+                            file={cmaFile}
+                            onFileChange={handleCmaChange}
+                            accept=".pdf,.xlsx,.xls"
                         />
                     </TabsContent>
 
-                    <TabsContent value="audio" className="mt-0">
-                        <FileInput
-                            id="audio-upload"
-                            label="Upload Pitch Audio (MP3, WAV)"
-                            icon={<Mic className="w-8 h-8 text-primary" />}
-                            file={audioFile}
-                            onFileChange={handleAudioChange}
-                            accept="audio/mpeg,audio/wav"
-                        />
-                    </TabsContent>
-
-                    <TabsContent value="text" className="mt-0">
+                    {/* <TabsContent value="text" className="mt-0">
                         <div className="space-y-2">
-                            <Label htmlFor="text-input" className="sr-only">Pitch Text</Label>
-                            <Textarea
+                             <Label htmlFor="text-input" className="sr-only">Pitch Text</Label>
+                             <Textarea
                                 id="text-input"
                                 value={textInput}
                                 onChange={(e) => setTextInput(e.target.value)}
@@ -330,7 +251,7 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
                                 className="min-h-[200px] font-mono text-sm p-4"
                             />
                         </div>
-                    </TabsContent>
+                    </TabsContent> */}
                 </Tabs>
 
                 {error && (
@@ -351,6 +272,6 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
                     )}
                 </Button>
             </div>
-        </div>
+        </div >
     );
 }

@@ -8,9 +8,7 @@ from google import genai
 from google.genai.types import GenerateContentConfig
 
 client = genai.Client(
-    vertexai=True,
-    project=settings.GCP_PROJECT_ID,
-    location=settings.GCP_LOCATION
+    api_key=settings.GEMINI_API_KEY
 )
 
 db = firestore.Client(project=settings.GCP_PROJECT_ID)

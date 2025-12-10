@@ -369,14 +369,16 @@ Return ONLY valid JSON. No markdown formatting.
 
         # Call Gemini with Google Search grounding
         response = client.models.generate_content(
+            # model='gemini-3-pro-preview',
             model='gemini-3-pro-preview',
             contents=prompt,
             config=GenerateContentConfig(
                 tools=[Tool(google_search=GoogleSearch())],
                 temperature=0.3,
                 top_p=0.9,
-                max_output_tokens=8192,
-                response_mime_type="application/json"
+                # max_output_tokens=8192,
+                max_output_tokens=8192
+                # response_mime_type="application/json" - Unsupported with tools
             )
         )
         

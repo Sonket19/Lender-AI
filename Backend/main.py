@@ -1,3 +1,10 @@
+import os
+from config.settings import settings
+
+# Enforce the use of the configured service account file BEFORE importing routers that use it
+if settings.FIREBASE_SERVICE_ACCOUNT_PATH:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.FIREBASE_SERVICE_ACCOUNT_PATH
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import deals, interviews, investor_chat, auth
@@ -5,13 +12,6 @@ import firebase_admin
 from firebase_admin import credentials
 
 # Initialize Firebase Admin
-import os
-from config.settings import settings
-
-# Enforce the use of the configured service account file
-if settings.FIREBASE_SERVICE_ACCOUNT_PATH:
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.FIREBASE_SERVICE_ACCOUNT_PATH
-
 if not firebase_admin._apps:
     cred = credentials.ApplicationDefault()
     firebase_admin.initialize_app(cred)

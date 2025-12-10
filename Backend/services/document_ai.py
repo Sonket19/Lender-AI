@@ -88,10 +88,9 @@ async def extract_metadata_from_text(text: str) -> Dict[str, Any]:
     
     try:
         # Use the same client as gemini_service
+        # Use API Key authentication instead of Vertex AI (ADC)
         client = genai.Client(
-            vertexai=True,
-            project=settings.GCP_PROJECT_ID,
-            location=settings.GCP_LOCATION
+            api_key=settings.GEMINI_API_KEY
         )
         
         prompt = f"""
@@ -145,10 +144,9 @@ async def extract_content_with_gemini(gcs_uri: str, mime_type: str) -> Dict[str,
     try:
         print(f"Starting Gemini extraction for {mime_type} file at {gcs_uri}...")
         
+        # Use API Key authentication instead of Vertex AI (ADC)
         client = genai.Client(
-            vertexai=True,
-            project=settings.GCP_PROJECT_ID,
-            location=settings.GCP_LOCATION
+            api_key=settings.GEMINI_API_KEY
         )
         
         # Create the part from GCS URI

@@ -6,9 +6,7 @@ import asyncio
 
 # Initialize Google Gen AI client
 client = genai.Client(
-    vertexai=True,
-    project=settings.GCP_PROJECT_ID,
-    location=settings.GCP_LOCATION
+    api_key=settings.GEMINI_API_KEY
 )
 
 async def generate_deal_cover_art(deal_id: str, company_name: str, sector: str, description: str) -> str:

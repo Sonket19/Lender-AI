@@ -3,6 +3,8 @@ Backend/.env
 Backend/.env.*
 Backend/venv/
 Backend/__pycache__/
+**/__pycache__/
+*.pyc
 Backend/*.db
 Backend/uploads/
 Backend/deploy.ps1

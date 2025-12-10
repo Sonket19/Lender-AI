@@ -40,12 +40,7 @@ class InterviewRequest(BaseModel):
 #     text: str
 
 # New Chat Code
-class WeightageUpdate(BaseModel):
-    team_strength: int
-    market_opportunity: int
-    traction: int
-    claim_credibility: int
-    financial_health: int
+
 
 class InitiateInterviewRequest(BaseModel):
     deal_id: str
@@ -129,12 +124,7 @@ class InterviewRequest(BaseModel):
 #     text: str
 
 # New Chat Code
-class WeightageUpdate(BaseModel):
-    team_strength: int
-    market_opportunity: int
-    traction: int
-    claim_credibility: int
-    financial_health: int
+
 
 class InitiateInterviewRequest(BaseModel):
     deal_id: str
@@ -196,3 +186,59 @@ class FactCheckResponse(BaseModel):
     deal_id: str
     claims: List[FactCheck]
     checked_at: str
+
+# CMA Report Data Models
+class CMARow(BaseModel):
+    """A single row in a CMA table (e.g., 'Revenue from Operations')"""
+    particulars: str
+    values: List[str]  # Values for each year/period
+
+class CMATable(BaseModel):
+    """A table section (Operating Statement, Balance Sheet, Cash Flow)"""
+    years: List[str]  # Column headers (e.g., ['FY24 (Audited)', 'FY25 (Estimated)'])
+    rows: List[CMARow]  # All rows in the table
+
+class CMAData(BaseModel):
+    """Complete structured CMA report data"""
+    general_info: Dict[str, str]  # Key-value pairs for general information
+    operating_statement: CMATable
+    balance_sheet: CMATable
+    cash_flow: CMATable
+
+# Credit Analysis Models (4-Gate Digital Underwriting Framework)
+class GateCheck(BaseModel):
+    """Individual check within a gate"""
+    name: str  # e.g., "Negative List Check", "DSCR"
+    status: str  # "Pass", "Fail", "Review"
+    result: str  # e.g., "1.45", "SaaS / Technology"
+    details: str  # Detailed explanation
+    flags: List[str] = []  # Red flags if any
+
+class Gate(BaseModel):
+    """A complete gate with multiple checks"""
+    gate_number: int
+    gate_name: str  # e.g., "Policy & Market Knock-Out"
+    status: str  # Overall gate status: "Pass", "Fail", "Review"
+    checks: List[GateCheck]
+
+class CreditAnalysis(BaseModel):
+    """Complete credit analysis following 4-Gate Algorithm"""
+    gates: List[Gate]  # All 4 gates
+    
+    # Summary metrics
+    loan_amount_requested: str  # From pitch deck
+    max_permissible_limit: str  # Calculated MPBF
+    dscr: str  # Debt Service Coverage Ratio
+    current_ratio: str
+    tol_tnw_ratio: str  # Total Outside Liabilities / Tangible Net Worth
+    runway_months: str  # Cash runway after loan
+    
+    # Final verdict
+    recommendation: str  # "SANCTION", "REJECT", "CONDITIONAL"
+    sanction_amount: str  # If approved, the amount
+    conditions: List[str]  # Conditions for sanction
+    rejection_reasons: List[str]  # If rejected, why
+    cgtmse_eligible: bool  # Government guarantee eligibility
+    
+    # Summary table entries
+    summary_table: List[Dict[str, str]]  # [{parameter, result, status}]

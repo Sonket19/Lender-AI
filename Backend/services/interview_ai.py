@@ -377,9 +377,7 @@ import re
 
 
 client = genai.Client(
-    vertexai=True,
-    project=settings.GCP_PROJECT_ID,
-    location=settings.GCP_LOCATION
+    api_key=settings.GEMINI_API_KEY
 )
 
 

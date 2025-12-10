@@ -1,8 +1,9 @@
 import json
-from typing import Dict, Any
+import base64
+from typing import Dict, Any, Optional, Union, List
 from fastapi import HTTPException
 from google import genai
-from google.genai.types import GenerateContentConfig, Tool, GoogleSearch
+from google.genai.types import GenerateContentConfig, Tool, GoogleSearch, Part
 from config.settings import settings
 
 # Initialize Google Gen AI client with API Key
@@ -10,243 +11,448 @@ client = genai.Client(
     api_key=settings.GEMINI_API_KEY
 )
 
-async def analyze_with_gemini(extracted_text: str, weightage: Dict[str, int], processing_mode: str = "fast") -> Dict[str, Any]:
+# Model priority list (will try in order if one fails)
+MODELS_PRO = ["gemini-3-pro-preview", "gemini-2.5-pro"]  # Try 3-pro first, fallback to 2.5-pro
+MODELS_FLASH = ["gemini-2.5-flash", "gemini-2.0-flash"]
+
+async def generate_with_fallback(
+    contents,
+    config: GenerateContentConfig,
+    models: List[str] = None,
+    use_flash: bool = False
+) -> Any:
     """
-    Analyze pitch deck content using Gemini with Google Search grounding
+    Generate content with automatic model fallback.
+    If the primary model returns 503/overloaded, tries the next model in the list.
+    """
+    if models is None:
+        models = MODELS_FLASH if use_flash else MODELS_PRO
+    
+    last_error = None
+    for model_name in models:
+        try:
+            print(f"🤖 Trying model: {model_name}")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+            print(f"✅ Success with model: {model_name}")
+            return response
+        except Exception as e:
+            error_msg = str(e)
+            print(f"⚠️ Model {model_name} failed: {error_msg[:100]}")
+            last_error = e
+            # Continue to next model if 503/overloaded
+            if "503" in error_msg or "overloaded" in error_msg.lower() or "UNAVAILABLE" in error_msg:
+                continue
+            else:
+                # For other errors, don't try fallback
+                raise e
+    
+    # All models failed
+    raise last_error
+
+async def analyze_with_gemini(
+    pdf_bytes: Optional[bytes] = None,
+    extracted_text: Optional[str] = None,
+    cma_text: Optional[str] = None,
+    weightage: Dict[str, int] = None,
+    processing_mode: str = "fast"
+) -> Dict[str, Any]:
+    """
+    Analyze pitch deck content using Gemini with Google Search grounding.
+    Can accept either PDF bytes (preferred) or extracted text.
     processing_mode: 'fast' uses gemini-2.5-flash, 'research' uses gemini-3-pro-preview
     """
+    if weightage is None:
+        weightage = {
+            'team_strength': 20,
+            'market_opportunity': 20,
+            'traction': 20,
+            'claim_credibility': 20,
+            'financial_health': 20
+        }
     try:
-        # Build JSON structure based on processing mode
-        risk_sections = ""
-        if processing_mode == "research":
-            risk_sections = f"""
-            "risk_metrics": {{
-                "composite_risk_score": <CALCULATED_SCORE>,
-                "score_interpretation": "Low (0-40), Medium (41-70), High (71-100)",
-                "narrative_justification": "Detailed explanation: Evaluate each factor (Team: {weightage.get('team_strength', 20)}%, Market: {weightage.get('market_opportunity', 20)}%, Traction: {weightage.get('traction', 20)}%, Claims: {weightage.get('claim_credibility', 20)}%, Financials: {weightage.get('financial_health', 20)}%). Calculate composite score = (Team_Score × {weightage.get('team_strength', 20)}/100) + (Market_Score × {weightage.get('market_opportunity', 20)}/100) + (Traction_Score × {weightage.get('traction', 20)}/100) + (Claims_Score × {weightage.get('claim_credibility', 20)}/100) + (Financials_Score × {weightage.get('financial_health', 20)}/100)"
-            }},
-            "risks_and_mitigation": [
-                {{
-                    "risk": "Market Risk",
-                    "description": "detailed description of the risk",
-                    "likelihood": "Low/Medium/High",
-                    "impact": "Low/Medium/High",
-                    "mitigation": "proposed mitigation strategies"
-                }},
-                {{
-                    "risk": "Technology Risk",
-                    "description": "detailed description",
-                    "likelihood": "Low/Medium/High",
-                    "impact": "Low/Medium/High",
-                    "mitigation": "proposed mitigation strategies"
-                }},
-                {{
-                    "risk": "Competitive Risk",
-                    "description": "detailed description",
-                    "likelihood": "Low/Medium/High",
-                    "impact": "Low/Medium/High",
-                    "mitigation": "proposed mitigation strategies"
-                }},
-                {{
-                    "risk": "Execution Risk",
-                    "description": "detailed description",
-                    "likelihood": "Low/Medium/High",
-                    "impact": "Low/Medium/High",
-                    "mitigation": "proposed mitigation strategies"
-                }},
-                {{
-                    "risk": "Financial Risk",
-                    "description": "detailed description",
-                    "likelihood": "Low/Medium/High",
-                    "impact": "Low/Medium/High",
-                    "mitigation": "proposed mitigation strategies"
-                }}
-            ],"""
-        
+        # Build CMA section if available
+        cma_section = ""
+        if cma_text:
+            cma_section = f"""
+
+CMA REPORT DATA (Credit Monitoring Arrangement - Financial Statements):
+{cma_text[:40000]}
+"""
+
+        # 4-Gate Digital Underwriting Framework Prompt
         prompt = f"""
-        You are an expert venture capital analyst. Analyze the following startup pitch deck content and provide a comprehensive investment memo.
-        
-        IMPORTANT: For market analysis data (TAM, competitors, industry reports), use Google Search to find current, accurate information.
+You are an expert Bank Credit Officer working for a modern Indian NBFC/Bank. Your job is to analyze loan applications from startups and MSMEs using the "4-Gate Credit Algorithm" framework.
 
-        CRITICAL WEIGHTAGE INSTRUCTIONS:
-        The following weightage percentages MUST be used to calculate the composite risk score and overall conclusion (total = 100%):
-        - Team Strength: {weightage.get('team_strength', 20)}%
-        - Market Opportunity: {weightage.get('market_opportunity', 20)}%
-        - Traction: {weightage.get('traction', 20)}%
-        - Claim Credibility: {weightage.get('claim_credibility', 20)}%
-        - Financial Health: {weightage.get('financial_health', 20)}%
+Analyze the attached Pitch Deck and the following CMA Report data to determine whether this business should be sanctioned the requested loan.
 
-        
-        USE THESE WEIGHTS TO:
-        1. Calculate the composite_risk_score (0-100, where lower is better) {'' if processing_mode == 'fast' else ''}
-        2. Determine the overall_attractiveness in the conclusion
-        3. Prioritize analysis depth for higher-weighted factors
-        
-        Pitch Deck Content:
-        {extracted_text[:50000]}
-        
-        Provide a detailed analysis in the following JSON structure. Use Google Search to find real market data, competitor information, and industry reports:
-        
-        {{
-            "company_overview": {{
-                "name": "extracted company name",
-                "sector": "primary sector/industry",
-                "founders": [
-                    {{
-                        "name": "founder name",
-                        "education": "educational background with institution names",
-                        "professional_background": "detailed work experience with companies and roles",
-                        "previous_ventures": "prior entrepreneurial experience with outcomes"
-                    }}
-                ],
-                "technologies_used": "detailed description of core technologies, frameworks, and technical stack",
-                "key_problems_solved": ["problem 1", "problem 2", "problem 3"]
-            }},
-            "market_analysis": {{
-                "industry_size_and_growth": {{
-                    "total_addressable_market": {{
-                        "name": "TAM description",
-                        "value": "market size with units (use Google Search for current data)",
-                        "cagr": "growth rate from recent reports",
-                        "source": "cite source with year"
-                    }},
-                    "serviceable_obtainable_market": {{
-                        "name": "SOM description",
-                        "value": "realistic market size for this company",
-                        "projection": "future projections for next 3-5 years",
-                        "cagr": "projected growth rate",
-                        "source": "cite source with year"
-                    }},
-                    "commentary": "detailed market insights and trends"
-                }},
-                "sub_segment_opportunities": ["opportunity 1", "opportunity 2", "opportunity 3"],
-                "competitor_details": [
-                    {{
-                        "name": "competitor name (search for real competitors)",
-                        "headquarters": "HQ location",
-                        "founding_year": "year founded",
-                        "total_funding_raised": "total funding amount",
-                        "funding_rounds": "number of rounds and details",
-                        "investors": "list of key investors",
-                        "business_model": "how they make money",
-                        "revenue_streams": "primary revenue sources",
-                        "target_market": "their target customers",
-                        "gross_margin": "gross margin % if available",
-                        "net_margin": "net margin % if available",
-                        "operating_expense": "OpEx details if available",
-                        "current_arr": "ARR if publicly known",
-                        "current_mrr": "MRR if publicly known",
-                        "arr_growth_rate": "growth rate if available",
-                        "churn_rate": "customer churn rate if available"
-                    }}
-                ],
-                "reports": [
-                    {{
-                        "title": "relevant industry report title (search Google)",
-                        "source_name": "report publisher name",
-                        "source_url": "URL to report",
-                        "summary": "2-3 sentence summary of key findings"
-                    }}
-                ]
-            }},
-            "business_model": [
-                {{
-                    "revenue_streams": "revenue stream name (e.g., SaaS Subscriptions)",
-                    "description": "detailed description of how this revenue stream works",
-                    "target_audience": "specific customer segment for this stream",
-                    "percentage_contribution": "estimated % of total revenue",
-                    "pricing": "pricing strategy and tiers",
-                    "unit_economics": {{
-                        "customer_acquisition_cost_CAC": "CAC value with calculation",
-                        "lifetime_value_LTV": "LTV value with calculation",
-                        "LTV_CAC_Ratio": "ratio and interpretation"
-                    }},
-                    "scalability": "assessment of scalability for this revenue stream",
-                    "additional_revenue_opportunities": ["opportunity 1", "opportunity 2"]
-                }},
-                ...
-            ],
-            "financials": {{
-                "arr_mrr": {{
-                    "current_booked_arr": "current ARR value",
-                    "current_mrr": "current MRR value"
-                }},
-                "burn_and_runway": {{
-                    "funding_ask": "amount being raised",
-                    "stated_runway": "runway duration with current burn",
-                    "implied_net_burn": "monthly burn rate",
-                    "gross_margin": "gross margin percentage",
-                    "cm1": "Contribution Margin 1 (Revenue - COGS)",
-                    "cm2": "Contribution Margin 2 (CM1 - Sales & Marketing)",
-                    "cm3": "Contribution Margin 3 (CM2 - R&D)"
-                }},
-                "funding_history": "previous funding rounds with amounts and investors",
-                "valuation_rationale": "justification for current/proposed valuation",
-                "projections": [
-                    {{"year": "year", "revenue": "projected revenue"}},
-                    ...
-                ]
-            }},
-            "claims_analysis": [
-                {{
-                    "claim": "specific claim from pitch deck",
-                    "analysis_method": "methodology used to verify",
-                    "input_dataset_length": "number of data points analyzed",
-                    "simulation_assumptions": "key assumptions made",
-                    "simulated_probability": "probability of claim being accurate (0-100%)",
-                    "result": "credibility assessment with reasoning"
-                }}
-            ],
-            {risk_sections}
-            "conclusion": {{
-                "overall_attractiveness": "Start with clear INVEST/PASS/CONDITIONAL recommendation.",
-                "product_summary": "One sentence summary of the product and its core value prop.",
-                "financial_analysis": "Brief summary of financial pros & cons (e.g. 'Strong margins but high burn').",
-                "investment_thesis": "Why invest? (or why not?). The core argument.",
-                "risk_summary": "{'Reference the composite risk score and the main risk factor.' if processing_mode == 'research' else 'Brief summary of main considerations (risk analysis not performed in fast mode).'}"
+{cma_section}
+
+=== THE 4-GATE CREDIT ALGORITHM ===
+
+GATE 1: POLICY & MARKET "KNOCK-OUT"
+Goal: Filter out "Non-Starters" based on qualitative risk.
+
+1. NEGATIVE LIST CHECK (Compliance)
+   - RBI and internal bank policies strictly ban certain sectors.
+   - REJECT IF business involves: Gambling, Cryptocurrency, Multi-Level Marketing (MLM), Real Estate Speculation, Chit Fund, Arms/Ammunition, or any illegal activity.
+
+2. SECTOR VIABILITY SCAN (The "Sunset" Filter)
+   - Classify the industry:
+     * GREEN (Sunrise): Green Energy, SaaS/AI, Healthcare, EV Components, Fintech
+     * AMBER (Stable): FMCG, Textiles, Logistics, Manufacturing, E-commerce
+     * RED (Sunset/Risky): Print Media, Coal-based tech, Single-use Plastic
+   - If RED, flag as "High-Risk Alert" requiring special review.
+
+3. MARKET SIZING REALITY CHECK
+   - Prevents "Delusional Projections"
+   - If a Seed-Stage startup claims >1% of a massive market in Year 1, flag as "Unrealistic Projections"
+
+---
+
+GATE 2: DATA INTEGRITY AUDIT (The "BS Detector")
+Goal: Catch manipulated numbers in the CMA before doing financial math.
+
+4. ACCOUNTING EQUATION CHECK
+   - Total Assets must equal (Total Liabilities + Net Worth)
+   - If it doesn't balance, flag as "Data Error"
+
+5. HOCKEY STICK FORENSIC CHECK
+   - Revenue cannot grow exponentially without capital expenditure or marketing spend.
+   - RED FLAG IF:
+     * Revenue Growth > 100% YoY
+     * AND Fixed Asset Growth < 10%
+     * AND Employee Cost Growth < 10%
+   - Flag as "Artificial Inflation"
+
+6. UNIT ECONOMICS AUDIT
+   - Startups often inflate future margins to make loan look repayable.
+   - RED FLAG IF:
+     * Projected EBITDA Margin > Current EBITDA Margin + 5%
+     * AND COGS is constant or declining
+   - Flag as "Unjustified Margin Improvement"
+
+---
+
+GATE 3: FINANCIAL ASSESSMENT (The "Calculator")
+Goal: Calculate actual Loan Eligibility using RBI-approved methods.
+
+7. MAXIMUM PERMISSIBLE BANK FINANCE (MPBF) - Turnover Method
+   - For limits up to ₹5 Crore (Nayak Committee norms):
+     * Gross Working Capital (GWC) = 25% of Projected Annual Turnover
+     * Promoter's Contribution (Margin) = 5% of Projected Annual Turnover
+     * Loan Eligibility = Projected Turnover × 0.20 (20%)
+   - If Actual Drawing Power (Stock + Debtors - Creditors) is lower, restrict limit accordingly.
+
+8. REPAYMENT CAPACITY (DSCR)
+   - Formula: (Net Profit + Depreciation + Interest) / (Interest + Principal Repayment)
+   - Thresholds:
+     * > 1.5: Excellent (Low Risk)
+     * 1.2 - 1.5: Acceptable for Startups (Medium Risk)
+     * < 1.2: REJECT (Cash flow insufficient)
+
+9. FINANCIAL HEALTH RATIOS (Vital Signs)
+   - Current Ratio: Must be > 1.33 (Indicates liquidity)
+   - TOL/TNW Ratio (Leverage): Must be < 3:1 (For startups, < 4:1 may be allowed)
+   - Debtor Days: Must match industry (30-90 days). If >180 days, flag as "Bad Debts Risk"
+
+---
+
+GATE 4: FINAL VERDICT & STARTUP SPECIFICS
+Goal: Synthesize a decision.
+
+10. RUNWAY TEST (Critical for Loss-Making Startups)
+    - If startup is currently burning cash, will this loan save them or just delay death?
+    - Formula: (Cash on Hand + Loan Amount) / Monthly Cash Burn
+    - Threshold: Must be > 12 Months. If less, default risk is near 100%.
+
+11. GUARANTEE SCHEME ELIGIBILITY (CGTMSE)
+    - If startup has no collateral, check Government Guarantee eligibility:
+      * Is Loan < ₹5 Crore? 
+      * Is Industry "Manufacturing" or "Service"?
+    - If YES to both, tag as "CGTMSE Eligible" (Reduces Bank's Risk)
+
+---
+
+=== OUTPUT FORMAT (STRICT JSON) ===
+
+Return your analysis in the following JSON structure:
+
+{{
+    "company_overview": {{
+        "name": "Company name from pitch deck",
+        "sector": "Industry/Sector",
+        "founders": [
+            {{
+                "name": "Founder name",
+                "education": "Educational background with institution names",
+                "professional_background": "Detailed work experience with companies and roles",
+                "previous_ventures": "Prior entrepreneurial experience with outcomes"
             }}
-        }}
+        ],
+        "technologies_used": "Detailed description of core technologies, frameworks, and technical stack",
+        "key_problems_solved": ["Problem 1", "Problem 2", "Problem 3"],
+        "loan_amount_requested": "Amount requested in the pitch deck (e.g., ₹50 Lakhs)",
+        "purpose_of_loan": "What the loan will be used for"
+    }},
+    
+    "credit_analysis": {{
+        "gates": [
+            {{
+                "gate_number": 1,
+                "gate_name": "Policy & Market Knock-Out",
+                "status": "Pass/Fail/Review",
+                "checks": [
+                    {{
+                        "name": "Negative List Check",
+                        "status": "Pass/Fail",
+                        "result": "Industry/Sector name",
+                        "details": "Explanation",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "Sector Viability",
+                        "status": "Pass/Fail/Review",
+                        "result": "Green/Amber/Red (Sector Type)",
+                        "details": "Explanation",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "Market Sizing Reality",
+                        "status": "Pass/Fail",
+                        "result": "Projected market share %",
+                        "details": "Assessment of projections",
+                        "flags": []
+                    }}
+                ]
+            }},
+            {{
+                "gate_number": 2,
+                "gate_name": "Data Integrity Audit",
+                "status": "Pass/Fail/Review",
+                "checks": [
+                    {{
+                        "name": "Accounting Equation",
+                        "status": "Pass/Fail",
+                        "result": "Balance check result",
+                        "details": "Verification details",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "Hockey Stick Check",
+                        "status": "Pass/Fail",
+                        "result": "Revenue vs Capex growth comparison",
+                        "details": "Analysis",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "Unit Economics Audit",
+                        "status": "Pass/Fail",
+                        "result": "Margin projection analysis",
+                        "details": "EBITDA margin trends",
+                        "flags": []
+                    }}
+                ]
+            }},
+            {{
+                "gate_number": 3,
+                "gate_name": "Financial Assessment",
+                "status": "Pass/Fail/Review",
+                "checks": [
+                    {{
+                        "name": "MPBF Calculation",
+                        "status": "Pass/Fail",
+                        "result": "Calculated limit (e.g., ₹40 Lakhs)",
+                        "details": "Turnover method calculation",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "DSCR",
+                        "status": "Pass/Fail",
+                        "result": "DSCR value (e.g., 1.45)",
+                        "details": "Repayment capacity analysis",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "Current Ratio",
+                        "status": "Pass/Fail",
+                        "result": "Ratio value",
+                        "details": "Liquidity assessment",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "TOL/TNW Ratio",
+                        "status": "Pass/Fail",
+                        "result": "Leverage ratio",
+                        "details": "Debt capacity assessment",
+                        "flags": []
+                    }}
+                ]
+            }},
+            {{
+                "gate_number": 4,
+                "gate_name": "Final Verdict & Specifics",
+                "status": "Pass/Fail/Review",
+                "checks": [
+                    {{
+                        "name": "Runway Test",
+                        "status": "Pass/Fail",
+                        "result": "X months runway",
+                        "details": "Cash burn analysis",
+                        "flags": []
+                    }},
+                    {{
+                        "name": "CGTMSE Eligibility",
+                        "status": "Pass/Fail",
+                        "result": "Eligible/Not Eligible",
+                        "details": "Government guarantee assessment",
+                        "flags": []
+                    }}
+                ]
+            }}
+        ],
         
-        CRITICAL INSTRUCTIONS FOR {'RISK_METRICS AND ' if processing_mode == 'research' else ''}CONCLUSION:
-        1. For market_analysis data, USE GOOGLE SEARCH to find current, accurate information
-        2. **COMPOSITE RISK SCORE CALCULATION** (weights are already percentages totaling 100%):
-           - Evaluate each of the 5 factors (Team, Market, Traction, Claims, Financials) on a 0-100 risk scale
-           - Multiply each risk score by its percentage weight and divide by 100
-           - Sum the weighted scores to get the composite_risk_score
-           - Example: Team Risk=30 (weight {weightage.get('team_strength', 20)}%), Market Risk=50 (weight {weightage.get('market_opportunity', 20)}%)
-           - Composite = (30 × {weightage.get('team_strength', 20)}/100) + (50 × {weightage.get('market_opportunity', 20)}/100) + ...
-        3. **CONCLUSION REQUIREMENTS**:
-           - Start with clear recommendation: "INVEST", "PASS", or "CONDITIONAL INVEST"
-           - Reference the composite risk score prominently
-           - Explain how each percentage-weighted factor influenced the decision
-           - Give MORE weight in your reasoning to factors with HIGHER percentages
-           - If a high-weighted factor is weak, emphasize this strongly
-        4. Search for real competitors and get their actual funding, metrics, and business details
-        5. Find recent industry reports from credible sources (Gartner, McKinsey, CB Insights, etc.)
-        6. If information is not available in pitch deck OR via search, use exactly "Not available" (not N/A, Unknown, etc.)
-        7. If information is partial/vague, provide what you have but flag it in a note
-        8. Ensure all numeric values include units (e.g., "$5M", "25%", "18 months")
-        9. Include at least 3-5 real competitors with as much detail as possible
-        10. Include at least 2-3 recent industry reports
-        11. Analyze at least 3-5 major claims from the pitch deck
-        12. Include all 5 risk categories with detailed mitigation strategies
-        13. Return ONLY valid JSON, no additional text or markdown
-        """
+        "loan_amount_requested": "₹X Lakhs",
+        "max_permissible_limit": "₹X Lakhs (calculated MPBF)",
+        "dscr": "X.XX",
+        "current_ratio": "X.XX",
+        "tol_tnw_ratio": "X.X:1",
+        "runway_months": "X months",
+        
+        "recommendation": "SANCTION/REJECT/CONDITIONAL",
+        "sanction_amount": "₹X Lakhs (if approved)",
+        "conditions": ["Condition 1", "Condition 2"],
+        "rejection_reasons": ["Reason 1 (if rejected)"],
+        "cgtmse_eligible": true/false,
+        
+        "summary_table": [
+            {{"parameter": "Industry Risk", "result": "SaaS / Technology (Sunrise)", "status": "🟢 Low"}},
+            {{"parameter": "Data Integrity", "result": "Growth aligns with Capex", "status": "🟢 Verified"}},
+            {{"parameter": "MPBF Limit", "result": "₹40 Lakhs (vs Request ₹50L)", "status": "🟡 Restricted"}},
+            {{"parameter": "DSCR", "result": "1.45 (Acceptable)", "status": "🟢 Pass"}},
+            {{"parameter": "Collateral", "result": "None (CGTMSE Cover)", "status": "🟢 Secured"}}
+        ],
+        
+        "final_verdict": "Detailed recommendation statement (e.g., 'Sanction up to ₹40 Lakhs under CGTMSE scheme. Subject to Promoter Margin of 5% being deposited upfront.')"
+    }},
+    
+    "market_analysis": {{
+        "industry_size_and_growth": {{
+            "total_addressable_market": {{
+                "name": "TAM description",
+                "value": "Market size with units (use Google Search for current data)",
+                "cagr": "Growth rate from recent reports",
+                "source": "Cite source with year"
+            }},
+            "serviceable_obtainable_market": {{
+                "name": "SOM description",
+                "value": "Realistic market size for this company",
+                "projection": "Future projections for next 3-5 years",
+                "cagr": "Projected growth rate",
+                "source": "Cite source with year"
+            }},
+            "commentary": "Detailed market insights and trends"
+        }},
+        "sub_segment_opportunities": ["Opportunity 1", "Opportunity 2", "Opportunity 3"],
+        "competitor_details": [
+            {{
+                "name": "Competitor name (search for real competitors)",
+                "headquarters": "HQ location",
+                "founding_year": "Year founded",
+                "total_funding_raised": "Total funding amount",
+                "funding_rounds": "Number of rounds and details",
+                "investors": "List of key investors",
+                "business_model": "How they make money",
+                "revenue_streams": "Primary revenue sources",
+                "target_market": "Their target customers",
+                "gross_margin": "Gross margin % if available",
+                "net_margin": "Net margin % if available",
+                "current_arr": "ARR if publicly known",
+                "current_mrr": "MRR if publicly known"
+            }}
+        ],
+        "reports": [
+            {{
+                "title": "Relevant industry report title (search Google)",
+                "source_name": "Report publisher name",
+                "source_url": "URL to report",
+                "summary": "2-3 sentence summary of key findings"
+            }}
+        ]
+    }},
+    
+    "financials": {{
+        "arr_mrr": {{
+            "current_booked_arr": "Annual Recurring Revenue",
+            "current_mrr": "Monthly Recurring Revenue"
+        }},
+        "burn_and_runway": {{
+            "implied_net_burn": "Monthly burn rate",
+            "stated_runway": "Current runway without loan",
+            "funding_ask": "Loan amount requested",
+            "gross_margin": "Gross margin %",
+            "cm1": "Contribution Margin 1",
+            "cm2": "Contribution Margin 2",
+            "cm3": "Contribution Margin 3"
+        }},
+        "funding_history": "Previous funding/loans",
+        "valuation_rationale": "Current valuation basis",
+        "projections": [
+            {{"year": "FY25", "revenue": "Projected revenue"}}
+        ]
+    }},
+    
+    "conclusion": {{
+        "overall_recommendation": "SANCTION/REJECT/CONDITIONAL - Clear verdict",
+        "product_summary": "One sentence product summary",
+        "financial_analysis": "Brief financial pros & cons",
+        "credit_thesis": "Why sanction or reject - the core argument from a lender's perspective",
+        "key_risks": "Summary of main credit risks identified"
+    }}
+}}
+
+CRITICAL INSTRUCTIONS:
+1. Use Google Search to find real market data and competitor information
+2. All financial calculations MUST be based on CMA data provided
+3. DSCR, Current Ratio, and TOL/TNW MUST be calculated from actual numbers
+4. If CMA data is missing critical fields, flag as "Incomplete Data"
+5. Be CONSERVATIVE - banks prefer to reject a good loan than approve a bad one
+6. Return ONLY valid JSON, no additional text or markdown
+"""
         
         # Select model based on processing mode
         model_name = "gemini-2.5-flash" if processing_mode == "fast" else "gemini-3-pro-preview"
         
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
+        # Build content parts based on input type
+        if pdf_bytes:
+            # Send PDF directly to Gemini (multimodal)
+            print(f"📄 Sending PDF directly to Gemini ({len(pdf_bytes)} bytes)")
+            contents = [
+                Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                prompt
+            ]
+        elif extracted_text:
+            # Fallback to text-based analysis
+            print(f"📝 Using extracted text for analysis ({len(extracted_text)} chars)")
+            contents = f"{prompt}\n\nPitch Deck Content:\n{extracted_text[:50000]}"
+        else:
+            raise HTTPException(status_code=400, detail="Either pdf_bytes or extracted_text must be provided")
+        
+        # Use fallback helper for automatic model switching on 503 errors
+        use_flash = (processing_mode == "fast")
+        response = await generate_with_fallback(
+            contents=contents,
             config=GenerateContentConfig(
                 tools=[Tool(google_search=GoogleSearch())],
                 temperature=0.2,
                 top_p=0.8,
                 top_k=40,
-                # max_output_tokens=8192,
                 max_output_tokens=16384
-            )
+            ),
+            use_flash=use_flash
         )
         
         # Parse JSON response
@@ -263,7 +469,7 @@ async def analyze_with_gemini(extracted_text: str, weightage: Dict[str, int], pr
         
         # Validate required fields (risk fields optional for fast mode)
         required_fields = [
-            'company_overview', 'market_analysis', 'business_model',
+            'company_overview', 'market_analysis',
             'financials', 'claims_analysis', 'conclusion'
         ]
         
@@ -370,6 +576,7 @@ CRITICAL: Return ONLY valid complete JSON. No markdown.
 """
         
         response = client.models.generate_content(
+            # model='gemini-3-pro-preview',
             model='gemini-3-pro-preview',
             contents=prompt,
             config=GenerateContentConfig(
@@ -453,6 +660,7 @@ async def chat_with_ai(memo: Dict[str, Any], company_name: str, sector: str, cha
         """
         
         response = client.models.generate_content(
+            # model='gemini-3-pro-preview',
             model='gemini-3-pro-preview',
             contents=context
         )
@@ -601,6 +809,7 @@ async def verify_claims_with_google(extracted_text: str) -> Dict[str, Any]:
         """
         
         response = client.models.generate_content(
+            # model='gemini-3-pro-preview',
             model='gemini-3-pro-preview',
             contents=prompt,
             config=GenerateContentConfig(
@@ -620,3 +829,167 @@ async def verify_claims_with_google(extracted_text: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"Error in fact check generation: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to verify claims: {str(e)}")
+
+
+async def extract_cma_data(raw_text: str = None, pdf_bytes: bytes = None) -> Dict[str, Any]:
+    """
+    Extract structured CMA data from raw text (from Excel dump) OR PDF bytes directly.
+    Accepts either raw_text or pdf_bytes - if pdf_bytes provided, sends directly to Gemini.
+    Returns a dictionary matching the CMAData schema with 4 sections:
+    - general_info: key-value pairs
+    - operating_statement: table with years and rows
+    - balance_sheet: table with years and rows
+    - cash_flow: table with years and rows
+    """
+    try:
+        prompt = """You are a financial data extraction expert. Analyze the following CMA (Credit Monitoring Arrangement) report and extract ALL data into a structured JSON format.
+
+## EXTRACTION INSTRUCTIONS:
+
+### 1. General Information (general_info)
+Extract ALL key-value pairs from the general information section. Common fields include:
+- Name of the Unit, Constitution, Date of Incorporation
+- Registered Office, Factory/Unit Address
+- Line of Activity, IEC Code, Industry/Sector
+- Names of Directors/Partners, Shareholding Pattern
+- Existing Banking Arrangements, Credit Facilities Proposed
+- Primary Security, Collateral Security
+- Key Management Personnel, Unit Status
+Include ANY other fields present in the source data.
+
+### 2. Operating Statement (operating_statement)
+Extract the Profit & Loss / Operating Statement table with:
+- "years": Array of column headers (e.g., ["FY24 (Audited)", "FY25 (Estimated)", "FY26 (Projected)", "FY27 (Projected)"])
+- "rows": Array of ALL row items, each with:
+  - "particulars": The row label (e.g., "Revenue from Operations", "EBITDA", "Profit After Tax")
+  - "values": Array of numeric values as strings for each year, in the same order as "years"
+
+### 3. Balance Sheet (balance_sheet)
+Extract the Balance Sheet table with the same structure:
+- "years": Column headers
+- "rows": ALL items including Liabilities, Assets, Share Capital, Reserves, Borrowings, etc.
+
+### 4. Cash Flow Statement (cash_flow)
+Extract the Cash Flow Statement table with the same structure:
+- "years": Column headers
+- "rows": ALL items including Operating Activities, Investing Activities, Financing Activities, etc.
+
+## OUTPUT FORMAT (strict JSON):
+{{
+    "general_info": {{
+        "Name of the Unit": "...",
+        "Constitution": "...",
+        ... (all fields found)
+    }},
+    "operating_statement": {{
+        "years": ["FY24 (Audited)", "FY25 (Estimated)", ...],
+        "rows": [
+            {{"particulars": "Revenue from Operations", "values": ["250.00", "950.00", ...]}},
+            {{"particulars": "Total Income", "values": ["250.00", "950.00", ...]}},
+            ... (all rows)
+        ]
+    }},
+    "balance_sheet": {{
+        "years": ["FY24 (Audited)", "FY25 (Estimated)", ...],
+        "rows": [
+            {{"particulars": "Share Capital", "values": ["100.00", "100.00", ...]}},
+            ... (all rows)
+        ]
+    }},
+    "cash_flow": {{
+        "years": ["FY24 (Audited)", "FY25 (Estimated)", ...],
+        "rows": [
+            {{"particulars": "Net Profit Before Tax", "values": ["-7.50", "133.00", ...]}},
+            ... (all rows)
+        ]
+    }}
+}}
+
+## CRITICAL RULES:
+1. Extract EVERY row that exists in the source data - do not skip any
+2. Preserve exact row labels/names as they appear
+3. Preserve numeric values exactly as formatted (including negatives, decimals)
+4. If a value is missing or N/A, use "0.00" or the appropriate placeholder
+5. Return ONLY valid JSON, no markdown or explanations
+6. The number of values in each row MUST match the number of years
+
+Return ONLY the JSON object:"""
+
+        # Build content based on input type
+        if pdf_bytes:
+            # Send PDF directly to Gemini (multimodal) - bypasses Document AI page limits
+            print(f"📄 Sending CMA PDF directly to Gemini ({len(pdf_bytes)} bytes)")
+            contents = [
+                Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                prompt
+            ]
+        elif raw_text:
+            # Use extracted text (from Excel or other sources)
+            print(f"📝 Using extracted text for CMA analysis ({len(raw_text)} chars)")
+            contents = f"{prompt}\n\n## RAW TEXT:\n{raw_text}"
+        else:
+            raise HTTPException(status_code=400, detail="Either pdf_bytes or raw_text must be provided for CMA extraction")
+
+        # Config differs for PDF vs text input - response_mime_type may not work with multimodal
+        if pdf_bytes:
+            config = GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=32768
+            )
+        else:
+            config = GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json",
+                max_output_tokens=32768
+            )
+
+        # Use fallback helper for automatic model switching on 503 errors
+        response = await generate_with_fallback(
+            contents=contents,
+            config=config,
+            use_flash=False  # Use pro models for CMA extraction
+        )
+        
+        # Check if response has content
+        if not response.text:
+            print(f"⚠️ Gemini returned empty response for CMA extraction")
+            raise HTTPException(status_code=500, detail="Gemini returned empty response for CMA extraction")
+        
+        response_text = response.text.strip()
+        
+        # Clean markdown if present
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        if response_text.startswith("```"):
+            response_text = response_text[3:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+        response_text = response_text.strip()
+        
+        cma_data = json.loads(response_text)
+        
+        # Validate structure
+        required_keys = ["general_info", "operating_statement", "balance_sheet", "cash_flow"]
+        for key in required_keys:
+            if key not in cma_data:
+                cma_data[key] = {"years": [], "rows": []} if key != "general_info" else {}
+        
+        print(f"✅ CMA data extracted successfully")
+        print(f"   - General Info fields: {len(cma_data.get('general_info', {}))}")
+        print(f"   - Operating Statement rows: {len(cma_data.get('operating_statement', {}).get('rows', []))}")
+        print(f"   - Balance Sheet rows: {len(cma_data.get('balance_sheet', {}).get('rows', []))}")
+        print(f"   - Cash Flow rows: {len(cma_data.get('cash_flow', {}).get('rows', []))}")
+        
+        return cma_data
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON parsing error in CMA extraction: {str(e)}")
+        return {
+            "general_info": {},
+            "operating_statement": {"years": [], "rows": []},
+            "balance_sheet": {"years": [], "rows": []},
+            "cash_flow": {"years": [], "rows": []}
+        }
+    except Exception as e:
+        print(f"❌ Error extracting CMA data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to extract CMA data: {str(e)}")
