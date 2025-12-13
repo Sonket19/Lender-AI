@@ -15,7 +15,8 @@ from services import (
     upload_to_gcs,
     generate_deal_id,
     create_word_document,
-    extract_cma_data
+    extract_cma_data,
+    verify_claims_with_google
 )
 from services.excel_extraction import extract_text_from_excel
 
@@ -559,6 +560,46 @@ async def download_pitch_deck(deal_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/download_cma_report/{deal_id}")
+async def download_cma_report(deal_id: str):
+    """Download CMA report file (Excel or PDF)"""
+    try:
+        deal_ref = db.collection('deals').document(deal_id)
+        deal_doc = deal_ref.get()
+        
+        if not deal_doc.exists:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        
+        deal_data = deal_doc.to_dict()
+        
+        if 'raw_files' not in deal_data or 'cma_report_url' not in deal_data['raw_files']:
+            raise HTTPException(status_code=404, detail="CMA report not found")
+        
+        gcs_path = deal_data['raw_files']['cma_report_url'].replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
+        blob = bucket.blob(gcs_path)
+        file_content = blob.download_as_bytes()
+        
+        company_name = deal_data['metadata'].get('company_name', 'Unknown')
+        
+        # Determine file type based on extension
+        if gcs_path.endswith('.xlsx'):
+            filename = f"{company_name}_CMA_Report_{deal_id}.xlsx"
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            filename = f"{company_name}_CMA_Report_{deal_id}.pdf"
+            media_type = "application/pdf"
+        
+        return StreamingResponse(
+            io.BytesIO(file_content),
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # @router.post("/deals/{deal_id}/investment-decision")
 # async def create_investment_decision(
 #     deal_id: str,
@@ -702,11 +743,28 @@ async def run_fact_check(
             extracted_text = ''
             
         if not extracted_text:
-            raise HTTPException(status_code=400, detail="No pitch deck text available for fact checking")
+            # Fallback: Check if we have the PDF file stored (new multimodal flow)
+            pdf_bytes = None
+            if 'raw_files' in deal_data and 'pitch_deck_url' in deal_data['raw_files']:
+                try:
+                    print(f"[{deal_id}] No text found. Downloading PDF for multimodal fact checking...")
+                    gcs_path = deal_data['raw_files']['pitch_deck_url'].replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
+                    blob = bucket.blob(gcs_path)
+                    pdf_bytes = blob.download_as_bytes()
+                    print(f"[{deal_id}] ✅ Downloaded PDF ({len(pdf_bytes)} bytes)")
+                except Exception as e:
+                    print(f"[{deal_id}] ⚠️ Failed to download PDF: {str(e)}")
             
-        # Run verification
-        from services.gemini_service import verify_claims_with_google
-        result = await verify_claims_with_google(extracted_text)
+            if not pdf_bytes:
+                raise HTTPException(status_code=400, detail="No pitch deck text or PDF available for fact checking")
+            
+            # Run verification with PDF bytes
+            from services.gemini_service import verify_claims_with_google
+            result = await verify_claims_with_google(pdf_bytes=pdf_bytes)
+        else:
+            # Run verification with extracted text
+            from services.gemini_service import verify_claims_with_google
+            result = await verify_claims_with_google(extracted_text=extracted_text)
         
         # Save result to Firestore
         fact_check_data = {

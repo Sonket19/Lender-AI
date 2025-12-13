@@ -18,7 +18,7 @@ interface CMATable {
 }
 
 interface CMAData {
-    general_info: Record<string, string>;
+    general_info: Record<string, any>;
     operating_statement: CMATable;
     balance_sheet: CMATable;
     cash_flow: CMATable;
@@ -29,7 +29,7 @@ interface CMAFinancialsProps {
 }
 
 // Component to render a key-value grid for General Info
-const GeneralInfoSection = ({ data }: { data: Record<string, string> }) => {
+const GeneralInfoSection = ({ data }: { data: Record<string, any> }) => {
     const entries = Object.entries(data);
 
     if (entries.length === 0) {
@@ -45,7 +45,11 @@ const GeneralInfoSection = ({ data }: { data: Record<string, string> }) => {
             {entries.map(([key, value]) => (
                 <div key={key} className="flex flex-col p-3 bg-secondary/30 rounded-lg">
                     <span className="text-xs text-muted-foreground font-medium uppercase tracking-wide">{key}</span>
-                    <span className="text-sm font-semibold mt-1">{value || 'N/A'}</span>
+                    <span className="text-sm font-semibold mt-1">
+                        {typeof value === 'object' && value !== null
+                            ? (Array.isArray(value) ? value.join(', ') : JSON.stringify(value, null, 2))
+                            : (value || 'N/A')}
+                    </span>
                 </div>
             ))}
         </div>

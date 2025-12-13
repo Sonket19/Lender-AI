@@ -126,7 +126,7 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
 
 
 
-    const handleDownloadSourceFile = async (fileType: 'pitch_deck' | 'video_pitch' | 'audio_pitch' | 'text_notes') => {
+    const handleDownloadSourceFile = async (fileType: 'pitch_deck' | 'video_pitch' | 'audio_pitch' | 'text_notes' | 'cma_report') => {
         setDownloadingFile(fileType);
 
         let endpoint = '';
@@ -135,6 +135,10 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
             case 'pitch_deck':
                 endpoint = `api/download_pitch_deck/${startupId}`;
                 defaultFilename = `${startupId}-pitch-deck.pdf`;
+                break;
+            case 'cma_report':
+                endpoint = `api/download_cma_report/${startupId}`;
+                defaultFilename = `${startupId}-cma-report`;
                 break;
             case 'video_pitch':
                 endpoint = `api/download_video_pitch/${startupId}`;
@@ -358,6 +362,17 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
                                         </div>
                                         <Button size="sm" onClick={() => handleDownloadSourceFile('pitch_deck')} disabled={downloadingFile === 'pitch_deck'}>
                                             {downloadingFile === 'pitch_deck' ? <Loader2 className="animate-spin" /> : 'Download'}
+                                        </Button>
+                                    </div>
+                                )}
+                                {rawFiles.cma_report_url && (
+                                    <div className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg">
+                                        <div className="flex items-center gap-3">
+                                            <FileText className="w-6 h-6 text-muted-foreground" />
+                                            <span className="font-medium">cma_report.{rawFiles.cma_report_url.endsWith('.xlsx') ? 'xlsx' : 'pdf'}</span>
+                                        </div>
+                                        <Button size="sm" onClick={() => handleDownloadSourceFile('cma_report')} disabled={downloadingFile === 'cma_report'}>
+                                            {downloadingFile === 'cma_report' ? <Loader2 className="animate-spin" /> : 'Download'}
                                         </Button>
                                     </div>
                                 )}

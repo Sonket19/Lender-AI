@@ -1,5 +1,6 @@
 import json
 import base64
+import re
 from typing import Dict, Any, Optional, Union, List
 from fastapi import HTTPException
 from google import genai
@@ -38,13 +39,21 @@ async def generate_with_fallback(
                 config=config
             )
             print(f"✅ Success with model: {model_name}")
+            
+            # Additional check: If response.text is None (e.g. Safety Filters), treat as failure
+            if not response.text:
+                print(f"⚠️ Model {model_name} returned empty text (Use Fallback)")
+                if hasattr(response, 'candidates') and response.candidates:
+                     print(f"Details: {response.candidates[0].finish_reason}")
+                raise ValueError("Empty response from model")
+
             return response
         except Exception as e:
             error_msg = str(e)
             print(f"⚠️ Model {model_name} failed: {error_msg[:100]}")
             last_error = e
-            # Continue to next model if 503/overloaded
-            if "503" in error_msg or "overloaded" in error_msg.lower() or "UNAVAILABLE" in error_msg:
+            # Continue to next model if 503/overloaded OR if empty response
+            if "503" in error_msg or "overloaded" in error_msg.lower() or "UNAVAILABLE" in error_msg or "Empty response" in error_msg:
                 continue
             else:
                 # For other errors, don't try fallback
@@ -198,7 +207,53 @@ Return your analysis in the following JSON structure:
         "loan_amount_requested": "Amount requested in the pitch deck (e.g., ₹50 Lakhs)",
         "purpose_of_loan": "What the loan will be used for"
     }},
-    
+    "market_analysis": {{
+        "industry_size_and_growth": {{
+            "total_addressable_market": {{
+                "name": "TAM description",
+                "value": "market size with units (use Google Search for current data)",
+                "cagr": "growth rate from recent reports",
+                "source": "cite source with year"
+            }},
+            "serviceable_obtainable_market": {{
+                "name": "SOM description",
+                "value": "realistic market size for this company",
+                "projection": "future projections for next 3-5 years",
+                "cagr": "projected growth rate",
+                "source": "cite source with year"
+            }},
+            "commentary": "detailed market insights and trends"
+        }},
+        "sub_segment_opportunities": ["opportunity 1", "opportunity 2", "opportunity 3"],
+        "competitor_details": [
+            {{
+                "name": "competitor name (search for real competitors)",
+                "headquarters": "HQ location",
+                "founding_year": "year founded",
+                "total_funding_raised": "total funding amount",
+                "funding_rounds": "number of rounds and details",
+                "investors": "list of key investors",
+                "business_model": "how they make money",
+                "revenue_streams": "primary revenue sources",
+                "target_market": "their target customers",
+                "gross_margin": "gross margin % if available",
+                "net_margin": "net margin % if available",
+                "operating_expense": "OpEx details if available",
+                "current_arr": "ARR if publicly known",
+                "current_mrr": "MRR if publicly known",
+                "arr_growth_rate": "growth rate if available",
+                "churn_rate": "customer churn rate if available"
+            }}
+        ],
+        "reports": [
+            {{
+                "title": "relevant industry report title (search Google)",
+                "source_name": "report publisher name",
+                "source_url": "URL to report",
+                "summary": "2-3 sentence summary of key findings"
+            }}
+        ]
+    }},
     "credit_analysis": {{
         "gates": [
             {{
@@ -421,6 +476,17 @@ CRITICAL INSTRUCTIONS:
 4. If CMA data is missing critical fields, flag as "Incomplete Data"
 5. Be CONSERVATIVE - banks prefer to reject a good loan than approve a bad one
 6. Return ONLY valid JSON, no additional text or markdown
+7. For market_analysis data, USE GOOGLE SEARCH to find current, accurate information
+8. Search for real competitors and get their actual funding, metrics, and business details
+9. Find recent industry reports from credible sources (Gartner, McKinsey, CB Insights, etc.)
+10. For reports, provide title, source name, URL, and key findings
+11. If information is not available in pitch deck OR via search, use exactly "Not available" (not N/A, Unknown, etc.)
+12. Ensure all numeric values include units (e.g., "$5M", "25%", "18 months")
+13. Include at least 3-5 real competitors with as much detail as possible
+14. Include at least 2-3 recent industry reports
+15. Analyze at least 3-5 major claims from the pitch deck
+16. Include all 5 risk categories with detailed mitigation strategies
+17. Return ONLY valid JSON, no additional text or markdown
 """
         
         # Select model based on processing mode
@@ -733,17 +799,19 @@ async def generate_investor_chat_response(
             detail=f"Failed to generate chat response: {str(e)}"
         )
 
-async def verify_claims_with_google(extracted_text: str) -> Dict[str, Any]:
+async def verify_claims_with_google(extracted_text: Optional[str] = None, pdf_bytes: Optional[bytes] = None) -> Dict[str, Any]:
     """
     Extract key claims from the pitch deck and verify them using Google Search.
+    Can use extracted text OR PDF bytes (multimodal).
     Returns a list of verified claims with verdicts.
     """
     try:
-        prompt = f"""
+        # Construct the instructions
+        instructions = """
         You are a world-class investigative fact-checker with access to Google Search. Your job is to verify startup claims with the rigor of a top-tier investigative journalist.
         
         STEP 1: EXTRACT CLAIMS
-        Identify 5-8 specific, verifiable claims from the pitch deck below. Prioritize:
+        Identify 5-8 specific, verifiable claims from the pitch deck. Prioritize:
         - Quantifiable metrics (revenue, users, growth rates, market size)
         - Named entities (partnerships, customers, awards, investors, team credentials)
         - Time-bound achievements (milestones, launches, certifications)
@@ -790,42 +858,65 @@ async def verify_claims_with_google(extracted_text: str) -> Dict[str, Any]:
         - What sources you checked
         - Why you arrived at this verdict
         - If "Unverifiable", explicitly state: "Searched X, Y, Z but found no evidence"
-        
-        PITCH DECK TEXT:
-        {extracted_text[:15000]}
-        
+
         Return ONLY this JSON structure:
-        {{
+        {
             "claims": [
-                {{
+                {
                     "claim": "The exact claim from the pitch deck",
                     "verdict": "Verified/Likely True/Exaggerated/False/Unverifiable",
                     "explanation": "Detailed research trail: what you searched, what you found, why this verdict",
                     "source_url": "Best authoritative source URL, or null if none found",
                     "confidence": "High/Medium/Low"
-                }}
+                }
             ]
-        }}
+        }
         """
+
+        contents = []
+        if pdf_bytes:
+            # Multimodal Input
+            contents.append(Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"))
+            contents.append(instructions)
+        elif extracted_text:
+            # Text Only Input
+            contents.append(f"{instructions}\n\nPITCH DECK TEXT:\n{extracted_text[:30000]}")
+        else:
+            raise ValueError("Either pdf_bytes or extracted_text must be provided")
         
-        response = client.models.generate_content(
-            # model='gemini-3-pro-preview',
-            model='gemini-3-pro-preview',
-            contents=prompt,
+        response = await generate_with_fallback(
+            contents=contents,
             config=GenerateContentConfig(
                 tools=[Tool(google_search=GoogleSearch())],
                 temperature=0.1
-            )
+            ),
+            models=MODELS_PRO,  # Uses [gemini-3-pro-preview, gemini-2.5-pro]
+            use_flash=False
         )
         
         response_text = response.text.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text[7:-3]
-        elif response_text.startswith("```"):
-            response_text = response_text[3:-3]
-            
-        return json.loads(response_text)
+        print(f"DEBUG: Fact Check Raw Response: {response_text[:500]}...")  # Log first 500 chars
+
+        # Improved JSON extraction using Regex
+        # Matches outermost curly braces including nested ones
+        match = re.search(r'(\{.*\})', response_text, re.DOTALL)
         
+        if match:
+            json_str = match.group(1)
+            return json.loads(json_str)
+        else:
+             print(f"⚠️ No JSON found in response. Raw text: {response_text}")
+             raise ValueError("Could not find valid JSON object in response")
+        
+    except json.JSONDecodeError as e:
+        print(f"JSON Parse Error: {str(e)}")
+        # print(f"Bad JSON Content: {response_text}") # Removed to avoid huge log
+        raise HTTPException(status_code=500, detail=f"Failed to parse fact check response: {str(e)}")
+        
+    except json.JSONDecodeError as e:
+        print(f"JSON Parse Error: {str(e)}")
+        print(f"Bad JSON Content: {response_text}")
+        raise HTTPException(status_code=500, detail=f"Failed to parse fact check response: {str(e)}")
     except Exception as e:
         print(f"Error in fact check generation: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to verify claims: {str(e)}")

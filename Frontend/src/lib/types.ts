@@ -162,6 +162,45 @@ export type InterviewInsights = {
   arr_mrr_reconciliation?: string;
 }
 
+// Credit Analysis Types for 4-Gate Framework
+export type GateCheck = {
+  name: string;
+  status: string;
+  result: string;
+  details: string;
+  flags?: string[];
+};
+
+export type Gate = {
+  gate_number: number;
+  gate_name: string;
+  status: string;
+  checks: GateCheck[];
+};
+
+export type SummaryTableEntry = {
+  parameter: string;
+  result: string;
+  status: string;
+};
+
+export type CreditAnalysis = {
+  gates: Gate[];
+  loan_amount_requested: string;
+  max_permissible_limit: string;
+  dscr: string;
+  current_ratio: string;
+  tol_tnw_ratio: string;
+  runway_months: string;
+  recommendation: string;
+  sanction_amount: string;
+  conditions: string[];
+  rejection_reasons: string[];
+  cgtmse_eligible: boolean;
+  summary_table: SummaryTableEntry[];
+  final_verdict: string;
+};
+
 export type MemoV1 = {
   claims_analysis: ClaimsAnalysis;
   market_analysis: MarketAnalysis;
@@ -173,6 +212,7 @@ export type MemoV1 = {
   risks_and_mitigation: RiskAndMitigation[];
   interview_summary: string;
   interview_insights: InterviewInsights;
+  credit_analysis?: CreditAnalysis;
   _weightage_used: Record<string, number>;
 };
 

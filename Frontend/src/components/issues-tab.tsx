@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { AlertTriangle } from 'lucide-react';
 
 const getImportanceColor = (importance: string) => {
-    switch(importance.toLowerCase()) {
+    switch (importance.toLowerCase()) {
         case 'critical': return 'bg-destructive/80 text-destructive-foreground';
         case 'high': return 'bg-yellow-500 text-white';
         case 'medium': return 'bg-blue-500 text-white';
@@ -19,9 +19,9 @@ const getImportanceColor = (importance: string) => {
 export default function IssuesTab({ issues }: { issues: InterviewIssue[] }) {
     if (!issues || issues.length === 0) {
         return (
-             <Card>
+            <Card>
                 <CardHeader>
-                    <CardTitle className="font-headline text-2xl flex items-center gap-3"><AlertTriangle className="w-7 h-7 text-primary"/>Identified Issues</CardTitle>
+                    <CardTitle className="font-headline text-2xl flex items-center gap-3"><AlertTriangle className="w-7 h-7 text-primary" />Identified Issues</CardTitle>
                     <CardDescription>
                         No outstanding issues were identified during the analysis.
                     </CardDescription>
@@ -32,11 +32,11 @@ export default function IssuesTab({ issues }: { issues: InterviewIssue[] }) {
             </Card>
         );
     }
-    
+
     return (
         <Card>
             <CardHeader>
-                <CardTitle className="font-headline text-2xl flex items-center gap-3"><AlertTriangle className="w-7 h-7 text-primary"/>Identified Issues for Founder Interview</CardTitle>
+                <CardTitle className="font-headline text-2xl flex items-center gap-3"><AlertTriangle className="w-7 h-7 text-primary" />Identified Issues for Founder Interview</CardTitle>
                 <CardDescription>
                     The following {issues.length} issues were identified during analysis and require clarification. Use the "Set Meeting" feature to initiate an interview.
                 </CardDescription>

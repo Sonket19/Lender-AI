@@ -82,7 +82,9 @@ export default function MarketAnalysis({ data, publicData }: { data: MarketAnaly
                     <TableCell className="text-sm text-muted-foreground">{competitor.business_model || 'N/A'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{competitor.funding_rounds || 'N/A'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{competitor.total_funding_raised || 'N/A'}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{competitor.investors || 'N/A'}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {Array.isArray(competitor.investors) ? competitor.investors.join(', ') : (competitor.investors || 'N/A')}
+                    </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{competitor.target_market || 'N/A'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{competitor.revenue_streams || 'N/A'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{competitor.current_arr || 'N/A'}</TableCell>
