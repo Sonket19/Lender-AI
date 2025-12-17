@@ -88,6 +88,7 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
     const [audioFile, setAudioFile] = useState<File | null>(null);
     const [textInput, setTextInput] = useState('');
     const [processingMode, setProcessingMode] = useState<'fast' | 'research'>('research');
+    const [loanAmount, setLoanAmount] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const { toast } = useToast();
@@ -139,15 +140,12 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
     const handleUploadClick = async () => {
         setError(null);
 
-        // Validate based on active tab
+        // Validate based on active tab - CMA is required, pitch deck is optional
         let hasInput = false;
-        if (activeTab === 'pdf' && pitchDeck && cmaFile) hasInput = true;
-        // if (activeTab === 'video' && videoFile) hasInput = true;
-        // if (activeTab === 'audio' && audioFile) hasInput = true;
-        // if (activeTab === 'text' && textInput.trim()) hasInput = true;
+        if (activeTab === 'pdf' && cmaFile) hasInput = true;
 
         if (!hasInput) {
-            setError(`Please provide both a Pitch Deck and CMA Report.`);
+            setError(`Please provide at least a CMA Report to proceed.`);
             return;
         }
 
@@ -155,11 +153,11 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
 
         const formData = new FormData();
 
-        // Append correct input based on active tab
         // Append files
         if (activeTab === 'pdf') {
             if (pitchDeck) formData.append('file', pitchDeck);
             if (cmaFile) formData.append('cma_report', cmaFile);
+            if (loanAmount) formData.append('loan_amount_requested', loanAmount);
         }
 
         try {
@@ -205,7 +203,7 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
                 </div>
                 <h2 className="font-headline text-2xl font-bold">Create New Analysis</h2>
                 <p className="text-sm text-muted-foreground mt-2">
-                    Upload a pitch deck (PDF) and CMA Report (PDF/Excel) to generate a comprehensive startup analysis.
+                    Upload CMA Report (required) and optionally a Pitch Deck. Enter your loan requirement.
                 </p>
             </div>
 
@@ -221,22 +219,36 @@ export default function FileUpload({ onGenerate }: FileUploadProps) {
                     </TabsList>
 
                     <TabsContent value="pdf" className="mt-0 space-y-4">
-                        <FileInput
-                            id="pitch-deck-upload"
-                            label="1. Upload Pitch Deck (PDF)"
-                            icon={<FileText className="w-8 h-8 text-primary" />}
-                            file={pitchDeck}
-                            onFileChange={handlePitchDeckChange}
-                            accept=".pdf"
-                        />
+                        {/* Loan Amount Input */}
+                        <div className="space-y-2 p-4 border rounded-lg bg-muted/30">
+                            <Label htmlFor="loan-amount" className="text-base font-semibold">Loan Amount Requested (₹)</Label>
+                            <Input
+                                id="loan-amount"
+                                type="text"
+                                placeholder="e.g., 50 Lakhs or 2 Crores"
+                                value={loanAmount}
+                                onChange={(e) => setLoanAmount(e.target.value)}
+                                className="h-12 text-lg"
+                            />
+                            <p className="text-xs text-muted-foreground">Enter the loan amount you are seeking from the bank.</p>
+                        </div>
 
                         <FileInput
                             id="cma-report-upload"
-                            label="2. Upload CMA Report (PDF or Excel)"
+                            label="1. Upload CMA Report (Required - PDF or Excel)"
                             icon={<FileText className="w-8 h-8 text-blue-500" />}
                             file={cmaFile}
                             onFileChange={handleCmaChange}
                             accept=".pdf,.xlsx,.xls"
+                        />
+
+                        <FileInput
+                            id="pitch-deck-upload"
+                            label="2. Upload Pitch Deck (Optional - PDF)"
+                            icon={<FileText className="w-8 h-8 text-primary" />}
+                            file={pitchDeck}
+                            onFileChange={handlePitchDeckChange}
+                            accept=".pdf"
                         />
                     </TabsContent>
 

@@ -15,7 +15,11 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "https://studio--studio-6714467766-8a879.us-central1.hosted.app"
     
     FIREBASE_SERVICE_ACCOUNT_PATH: str = "./firebase-service-account.json"
-
+    
+    # Local Storage Fallback
+    USE_LOCAL_STORAGE: bool = True
+    LOCAL_UPLOAD_DIR: str = "uploads"
+    
     class Config:
         env_file = ".env"
         extra = "ignore"

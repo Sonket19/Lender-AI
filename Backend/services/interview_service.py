@@ -276,10 +276,16 @@ def generate_draft_interview(deal_id: str) -> bool:
     print(f"[{deal_id}] Draft interview saved with {len(all_issues)} questions")
     return True
 
-def create_interview(deal_id: str, founder_email: str, founder_name: str = None) -> Dict[str, Any]:
+def create_interview(deal_id: str, founder_email: str, founder_name: str = None, selected_fields: list = None) -> Dict[str, Any]:
     """
     Activate an existing draft interview or create a new one if missing.
     Generates token and sends email.
+    
+    Args:
+        deal_id: The deal ID
+        founder_email: Founder's email address
+        founder_name: Founder's name (optional)
+        selected_fields: List of field names to include in interview (optional, if None includes all)
     """
     deal_ref = db.collection('deals').document(deal_id)
     deal_data = deal_ref.get().to_dict()
@@ -289,28 +295,100 @@ def create_interview(deal_id: str, founder_email: str, founder_name: str = None)
         
     interview = deal_data.get('interview')
     
-    # Case 1: Interview already active or pending - return existing
+    # Case 1: Interview already active or pending
+    # If selected_fields is provided, we need to reset with the new selection
     if interview and interview.get('status') in ['pending', 'active']:
-        # Update email/name if provided
-        updates = {}
-        if founder_email and founder_email != interview.get('founder_email'):
-            updates['interview.founder_email'] = founder_email
-            interview['founder_email'] = founder_email
-        if founder_name and founder_name != interview.get('founder_name'):
-            updates['interview.founder_name'] = founder_name
-            interview['founder_name'] = founder_name
+        if selected_fields and len(selected_fields) > 0:
+            # Check if interview is already active (founder has started answering)
+            # Don't reset active interviews - only pending ones
+            if interview.get('status') == 'active':
+                print(f"[{deal_id}] Interview is already active, cannot reset. Returning existing interview.")
+                return {
+                    "deal_id": deal_id,
+                    "token": interview['token'],
+                    "link": f"{settings.FRONTEND_URL}/interview/{interview['token']}",
+                    "total_questions": len(interview.get('issues', [])),
+                    "critical_questions": len([i for i in interview.get('issues', []) if i.get('importance') == 'critical']),
+                    "breakdown": {},
+                    "message": "Interview is already in progress and cannot be modified."
+                }
             
-        if updates:
+            # User wants to change the selection - reset the pending interview
+            print(f"[{deal_id}] Resetting pending interview with new selection ({len(selected_fields)} questions)")
+            
+            # Get original issues from deal (not the interview) to allow full re-selection
+            original_draft = deal_data.get('interview', {})
+            all_original_issues = original_draft.get('original_issues', original_draft.get('issues', []))
+            
+            # Filter issues by selected fields
+            filtered_issues = [issue for issue in all_original_issues if issue['field'] in selected_fields]
+            if len(filtered_issues) == 0:
+                raise ValueError("No valid questions selected. Please select at least one question.")
+            
+            # Reset the interview with new selection
+            token = generate_interview_token()
+            filtered_missing_fields = [issue['field'] for issue in filtered_issues]
+            
+            updates = {
+                'interview.status': 'pending',
+                'interview.token': token,
+                'interview.founder_email': founder_email,
+                'interview.founder_name': founder_name or "Founder",
+                'interview.expires_at': (datetime.utcnow() + timedelta(days=7)).isoformat() + "Z",
+                'interview.activated_at': datetime.utcnow().isoformat() + "Z",
+                'interview.issues': filtered_issues,
+                'interview.original_issues': all_original_issues,  # Preserve original for future re-selection
+                'interview.missing_fields': filtered_missing_fields,
+                'interview.gathered_info': {},
+                'interview.cannot_answer_fields': [],
+                'interview.asked_questions': [],
+                'interview.ask_count': {},
+                'interview.chat_history': [],  # Reset chat
+                'interview.progress': {
+                    'total': len(filtered_issues),
+                    'answered': 0,
+                    'cannot_answer': 0,
+                    'attempted': 0,
+                    'remaining': len(filtered_issues),
+                    'is_complete': False
+                }
+            }
+            
             deal_ref.update(updates)
             
-        return {
-            "deal_id": deal_id,
-            "token": interview['token'],
-            "link": f"{settings.FRONTEND_URL}/interview/{interview['token']}",
-            "total_questions": len(interview.get('issues', [])),
-            "critical_questions": len([i for i in interview.get('issues', []) if i.get('importance') == 'critical']),
-            "breakdown": {} # Not strictly needed for re-sending
-        }
+            return {
+                "deal_id": deal_id,
+                "token": token,
+                "link": f"{settings.FRONTEND_URL}/interview/{token}",
+                "total_questions": len(filtered_issues),
+                "critical_questions": len([i for i in filtered_issues if i.get('importance') == 'critical']),
+                "breakdown": {
+                    "missing": len([i for i in filtered_issues if i.get('status') == 'missing']),
+                    "shallow": len([i for i in filtered_issues if i.get('status') == 'shallow']),
+                    "needs_detail": len([i for i in filtered_issues if i.get('status') == 'needs_detail'])
+                }
+            }
+        else:
+            # No new selection - just update email/name and return existing
+            updates = {}
+            if founder_email and founder_email != interview.get('founder_email'):
+                updates['interview.founder_email'] = founder_email
+                interview['founder_email'] = founder_email
+            if founder_name and founder_name != interview.get('founder_name'):
+                updates['interview.founder_name'] = founder_name
+                interview['founder_name'] = founder_name
+                
+            if updates:
+                deal_ref.update(updates)
+                
+            return {
+                "deal_id": deal_id,
+                "token": interview['token'],
+                "link": f"{settings.FRONTEND_URL}/interview/{interview['token']}",
+                "total_questions": len(interview.get('issues', [])),
+                "critical_questions": len([i for i in interview.get('issues', []) if i.get('importance') == 'critical']),
+                "breakdown": {} # Not strictly needed for re-sending
+            }
 
     # Case 2: No draft exists - generate one now (fallback)
     if not interview or interview.get('status') != 'draft':
@@ -323,7 +401,20 @@ def create_interview(deal_id: str, founder_email: str, founder_name: str = None)
         interview = deal_data.get('interview')
 
     # Case 3: Activate draft
+    # Filter issues if selected_fields is provided
+    original_issues = interview['issues']
+    if selected_fields and len(selected_fields) > 0:
+        filtered_issues = [issue for issue in original_issues if issue['field'] in selected_fields]
+        if len(filtered_issues) == 0:
+            raise ValueError("No valid questions selected. Please select at least one question.")
+        print(f"[{deal_id}] Filtering issues: {len(original_issues)} -> {len(filtered_issues)} questions")
+    else:
+        filtered_issues = original_issues
+    
     token = generate_interview_token()
+    
+    # Calculate filtered missing_fields
+    filtered_missing_fields = [issue['field'] for issue in filtered_issues]
     
     updates = {
         'interview.status': 'pending',
@@ -331,7 +422,22 @@ def create_interview(deal_id: str, founder_email: str, founder_name: str = None)
         'interview.founder_email': founder_email,
         'interview.founder_name': founder_name or "Founder",
         'interview.expires_at': (datetime.utcnow() + timedelta(days=7)).isoformat() + "Z",
-        'interview.activated_at': datetime.utcnow().isoformat() + "Z"
+        'interview.activated_at': datetime.utcnow().isoformat() + "Z",
+        'interview.issues': filtered_issues,  # Update with filtered issues
+        'interview.original_issues': original_issues,  # Preserve original for future re-selection
+        'interview.missing_fields': filtered_missing_fields,  # Update missing fields
+        'interview.gathered_info': {},
+        'interview.cannot_answer_fields': [],
+        'interview.asked_questions': [],
+        'interview.ask_count': {},
+        'interview.progress': {
+            'total': len(filtered_issues),
+            'answered': 0,
+            'cannot_answer': 0,
+            'attempted': 0,
+            'remaining': len(filtered_issues),
+            'is_complete': False
+        }
     }
     
     deal_ref.update(updates)
@@ -340,19 +446,20 @@ def create_interview(deal_id: str, founder_email: str, founder_name: str = None)
     interview.update({
         'token': token,
         'founder_email': founder_email,
-        'founder_name': founder_name
+        'founder_name': founder_name,
+        'issues': filtered_issues
     })
     
     return {
         "deal_id": deal_id,
         "token": token,
         "link": f"{settings.FRONTEND_URL}/interview/{token}",
-        "total_questions": len(interview['issues']),
-        "critical_questions": len([i for i in interview['issues'] if i.get('importance') == 'critical']),
+        "total_questions": len(filtered_issues),
+        "critical_questions": len([i for i in filtered_issues if i.get('importance') == 'critical']),
         "breakdown": {
-            "missing": len([i for i in interview['issues'] if i.get('status') == 'missing']),
-            "shallow": len([i for i in interview['issues'] if i.get('status') == 'shallow']),
-            "needs_detail": len([i for i in interview['issues'] if i.get('status') == 'needs_detail'])
+            "missing": len([i for i in filtered_issues if i.get('status') == 'missing']),
+            "shallow": len([i for i in filtered_issues if i.get('status') == 'shallow']),
+            "needs_detail": len([i for i in filtered_issues if i.get('status') == 'needs_detail'])
         }
     }
 

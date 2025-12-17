@@ -4,33 +4,47 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Building2, FileSpreadsheet, Scale, Banknote, Info } from 'lucide-react';
+import { FileSpreadsheet, Building2, Scale, Banknote } from 'lucide-react';
 
-// Types for CMA Data
+// Types for dynamic CMA Data (new format)
 interface CMARow {
     particulars: string;
     values: string[];
 }
 
+interface CMASheet {
+    name: string;
+    first_column_header?: string;
+    years: string[];
+    rows: CMARow[];
+}
+
+// New dynamic format
+interface CMADataNew {
+    sheets: CMASheet[];
+    sheet_count: number;
+}
+
+// Old fixed format
 interface CMATable {
     years: string[];
     rows: CMARow[];
 }
 
-interface CMAData {
-    general_info: Record<string, any>;
-    operating_statement: CMATable;
-    balance_sheet: CMATable;
-    cash_flow: CMATable;
+interface CMADataOld {
+    general_info?: Record<string, any>;
+    operating_statement?: CMATable;
+    balance_sheet?: CMATable;
+    cash_flow?: CMATable;
 }
 
 interface CMAFinancialsProps {
-    data: CMAData | null | undefined;
+    data: CMADataNew | CMADataOld | null | undefined;
 }
 
-// Component to render a key-value grid for General Info
+// Component to render key-value pairs (for General Info)
 const GeneralInfoSection = ({ data }: { data: Record<string, any> }) => {
-    const entries = Object.entries(data);
+    const entries = Object.entries(data || {});
 
     if (entries.length === 0) {
         return (
@@ -56,12 +70,16 @@ const GeneralInfoSection = ({ data }: { data: Record<string, any> }) => {
     );
 };
 
-// Component to render a financial table (Operating Statement, Balance Sheet, Cash Flow)
-const FinancialTable = ({ data }: { data: CMATable }) => {
-    if (!data.years || data.years.length === 0 || !data.rows || data.rows.length === 0) {
+// Component to render a financial table (any sheet)
+const SheetTable = ({ data }: { data: CMATable | CMASheet }) => {
+    const years = data?.years || [];
+    const rows = data?.rows || [];
+    const firstColumnHeader = (data as CMASheet)?.first_column_header || 'Particulars';
+
+    if (rows.length === 0) {
         return (
             <div className="text-center py-8 text-muted-foreground">
-                No data available for this section
+                No data available for this sheet
             </div>
         );
     }
@@ -71,8 +89,8 @@ const FinancialTable = ({ data }: { data: CMATable }) => {
             <Table>
                 <TableHeader>
                     <TableRow className="bg-secondary/50">
-                        <TableHead className="font-bold min-w-[250px]">Particulars</TableHead>
-                        {data.years.map((year, idx) => (
+                        <TableHead className="font-bold min-w-[250px]">{firstColumnHeader}</TableHead>
+                        {years.map((year, idx) => (
                             <TableHead key={idx} className="text-right font-bold min-w-[120px]">
                                 {year}
                             </TableHead>
@@ -80,21 +98,24 @@ const FinancialTable = ({ data }: { data: CMATable }) => {
                     </TableRow>
                 </TableHeader>
                 <TableBody>
-                    {data.rows.map((row, rowIdx) => {
-                        // Check if this is a header/section row (usually all values are 0.00 or empty)
-                        const isHeaderRow = row.values.every(v => v === '0.00' || v === '0' || v === '');
-                        const isTotalRow = row.particulars.toLowerCase().includes('total') ||
-                            row.particulars.toLowerCase().includes('net worth') ||
-                            row.particulars.toLowerCase().includes('gross profit');
+                    {rows.map((row, rowIdx) => {
+                        // Defensive check: ensure row and values exist
+                        if (!row || !Array.isArray(row.values)) return null;
+
+                        // Check if this is a header/section row
+                        const isHeaderRow = row.values.every(v => v === '0.00' || v === '0' || v === '' || v === '0.0');
+                        const isTotalRow = row.particulars?.toLowerCase()?.includes('total') ||
+                            row.particulars?.toLowerCase()?.includes('net worth') ||
+                            row.particulars?.toLowerCase()?.includes('gross profit');
 
                         return (
                             <TableRow
                                 key={rowIdx}
                                 className={`
-                  ${isHeaderRow ? 'bg-primary/5 font-semibold' : ''}
-                  ${isTotalRow ? 'bg-accent/10 font-bold border-t-2' : ''}
-                  hover:bg-secondary/30 transition-colors
-                `}
+                                    ${isHeaderRow ? 'bg-primary/5 font-semibold' : ''}
+                                    ${isTotalRow ? 'bg-accent/10 font-bold border-t-2' : ''}
+                                    hover:bg-secondary/30 transition-colors
+                                `}
                             >
                                 <TableCell className={`${isHeaderRow || isTotalRow ? 'font-semibold' : ''}`}>
                                     {row.particulars}
@@ -121,7 +142,15 @@ const FinancialTable = ({ data }: { data: CMATable }) => {
     );
 };
 
+// Check if data is new format (has sheets array)
+function isNewFormat(data: any): data is CMADataNew {
+    return data && Array.isArray(data.sheets);
+}
+
 export default function CMAFinancials({ data }: CMAFinancialsProps) {
+    // Debug logging
+    console.log('CMAFinancials received data:', data);
+
     if (!data) {
         return (
             <Card>
@@ -135,6 +164,75 @@ export default function CMAFinancials({ data }: CMAFinancialsProps) {
             </Card>
         );
     }
+
+    // NEW FORMAT: Dynamic sheets
+    if (isNewFormat(data)) {
+        const sheets = data.sheets;
+
+        if (sheets.length === 0) {
+            return (
+                <Card>
+                    <CardContent className="py-8">
+                        <div className="text-center text-muted-foreground">
+                            <FileSpreadsheet className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                            <p>No sheets found in CMA data</p>
+                        </div>
+                    </CardContent>
+                </Card>
+            );
+        }
+
+        const defaultTab = sheets[0]?.name || 'sheet-0';
+
+        return (
+            <div className="space-y-4">
+                <Tabs defaultValue={defaultTab} className="w-full">
+                    <TabsList className={`grid w-full mb-4`} style={{ gridTemplateColumns: `repeat(${Math.min(sheets.length, 6)}, 1fr)` }}>
+                        {sheets.map((sheet, idx) => (
+                            <TabsTrigger
+                                key={idx}
+                                value={sheet.name}
+                                className="flex items-center gap-2 text-xs sm:text-sm truncate"
+                                title={sheet.name}
+                            >
+                                <FileSpreadsheet className="w-4 h-4 flex-shrink-0" />
+                                <span className="truncate">{sheet.name}</span>
+                            </TabsTrigger>
+                        ))}
+                    </TabsList>
+
+                    {sheets.map((sheet, idx) => (
+                        <TabsContent key={idx} value={sheet.name}>
+                            <Card>
+                                <CardHeader>
+                                    <CardTitle className="flex items-center gap-2">
+                                        <FileSpreadsheet className="w-5 h-5 text-primary" />
+                                        {sheet.name}
+                                        {sheet.years?.length > 0 && (
+                                            <Badge variant="outline" className="ml-2">
+                                                {sheet.years.length} Columns
+                                            </Badge>
+                                        )}
+                                        {sheet.rows?.length > 0 && (
+                                            <Badge variant="secondary" className="ml-2">
+                                                {sheet.rows.length} Rows
+                                            </Badge>
+                                        )}
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                    <SheetTable data={sheet} />
+                                </CardContent>
+                            </Card>
+                        </TabsContent>
+                    ))}
+                </Tabs>
+            </div>
+        );
+    }
+
+    // OLD FORMAT: Fixed 4 tabs (backward compatibility)
+    const oldData = data as CMADataOld;
 
     return (
         <div className="space-y-4">
@@ -167,7 +265,7 @@ export default function CMAFinancials({ data }: CMAFinancialsProps) {
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            <GeneralInfoSection data={data.general_info || {}} />
+                            <GeneralInfoSection data={oldData.general_info || {}} />
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -178,15 +276,10 @@ export default function CMAFinancials({ data }: CMAFinancialsProps) {
                             <CardTitle className="flex items-center gap-2">
                                 <FileSpreadsheet className="w-5 h-5 text-primary" />
                                 Operating Statement
-                                {data.operating_statement?.years?.length > 0 && (
-                                    <Badge variant="outline" className="ml-2">
-                                        {data.operating_statement.years.length} Years
-                                    </Badge>
-                                )}
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            <FinancialTable data={data.operating_statement || { years: [], rows: [] }} />
+                            <SheetTable data={oldData.operating_statement || { years: [], rows: [] }} />
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -197,15 +290,10 @@ export default function CMAFinancials({ data }: CMAFinancialsProps) {
                             <CardTitle className="flex items-center gap-2">
                                 <Scale className="w-5 h-5 text-primary" />
                                 Balance Sheet
-                                {data.balance_sheet?.years?.length > 0 && (
-                                    <Badge variant="outline" className="ml-2">
-                                        {data.balance_sheet.years.length} Years
-                                    </Badge>
-                                )}
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            <FinancialTable data={data.balance_sheet || { years: [], rows: [] }} />
+                            <SheetTable data={oldData.balance_sheet || { years: [], rows: [] }} />
                         </CardContent>
                     </Card>
                 </TabsContent>
@@ -216,15 +304,10 @@ export default function CMAFinancials({ data }: CMAFinancialsProps) {
                             <CardTitle className="flex items-center gap-2">
                                 <Banknote className="w-5 h-5 text-primary" />
                                 Cash Flow Statement
-                                {data.cash_flow?.years?.length > 0 && (
-                                    <Badge variant="outline" className="ml-2">
-                                        {data.cash_flow.years.length} Years
-                                    </Badge>
-                                )}
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            <FinancialTable data={data.cash_flow || { years: [], rows: [] }} />
+                            <SheetTable data={oldData.cash_flow || { years: [], rows: [] }} />
                         </CardContent>
                     </Card>
                 </TabsContent>

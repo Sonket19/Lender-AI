@@ -89,6 +89,36 @@ export type FinancialProjection = {
   comment?: string;
 };
 
+export type CMARow = {
+  particulars: string;
+  values: string[];
+};
+
+export type CMASheet = {
+  name: string;
+  years: string[];
+  rows: CMARow[];
+};
+
+// New dynamic sheets structure
+export type CMAData = {
+  sheets: CMASheet[];
+  sheet_count: number;
+};
+
+// Legacy types (kept for backward compatibility)
+export type CMATable = {
+  years: string[];
+  rows: CMARow[];
+};
+
+export type CMATables = {
+  general_info?: Record<string, string>;
+  operating_statement?: CMATable;
+  balance_sheet?: CMATable;
+  cash_flow?: CMATable;
+};
+
 export type Financials = {
   funding_history: string;
   projections: FinancialProjection[];
@@ -106,6 +136,7 @@ export type Financials = {
     cm2?: string;
     cm3?: string;
   };
+  cma_tables?: CMATables;
 };
 
 export type Claim = {
@@ -162,7 +193,41 @@ export type InterviewInsights = {
   arr_mrr_reconciliation?: string;
 }
 
-// Credit Analysis Types for 4-Gate Framework
+export type WaterfallStep = {
+  step_number: number;
+  scheme_name: string;
+  rule_checked: string;
+  result: string;
+  reason: string;
+};
+
+export type CreditResult = {
+  deal_id: string;
+  status: string;
+  eligible_scheme: string;
+  max_permissible_limit: number;
+  recommended_amount: number;
+
+  current_ratio: number;
+  current_ratio_status: string;
+  tol_tnw: number;
+  leverage_status: string;
+  avg_dscr: number;
+  dscr_status: string;
+
+  radar_chart_data: Record<string, number>;
+  waterfall_data: WaterfallStep[];
+
+  flags: string[];
+  rejection_reasons: string[];
+  compliance_notes: string[];
+
+  cgtmse_eligible: boolean;
+  mudra_eligible: boolean;
+  cgss_eligible: boolean;
+};
+
+// Deprecated old CreditAnalysis Types (keeping for backward compat if needed)
 export type GateCheck = {
   name: string;
   status: string;
@@ -234,6 +299,7 @@ export type Metadata = {
   status: string;
   processed_at: string;
   processing_mode?: 'fast' | 'research';
+  loan_amount_requested?: string;
   weightage: {
     claim_credibility: number;
     financial_health: number;
@@ -282,6 +348,18 @@ export type AnalysisData = {
     text_pitch_deck_url?: string;
   };
   timestamp: string;
+  cma_data?: CMAData;
+  cma_structured?: {
+    audited_financials: any[];
+    provisional_financials: any;
+    projected_financials: any[];
+  };
+  fact_check?: any;
+  cover_image?: string;
+  public_data?: PublicData;
+  metadata: Metadata;
+  interview?: Interview;
+  credit_analysis?: CreditResult;
 };
 
 export type ChatMessage = {

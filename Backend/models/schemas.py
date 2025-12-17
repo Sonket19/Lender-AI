@@ -46,6 +46,7 @@ class InitiateInterviewRequest(BaseModel):
     deal_id: str
     founder_email: EmailStr
     founder_name: Optional[str] = None
+    selected_fields: Optional[List[str]] = None  # Optional list of field names to include in interview
 
 class ChatMessage(BaseModel):
     message: str
@@ -130,6 +131,7 @@ class InitiateInterviewRequest(BaseModel):
     deal_id: str
     founder_email: EmailStr
     founder_name: Optional[str] = None
+    selected_fields: Optional[List[str]] = None  # Optional list of field names to include in interview
 
 class ChatMessage(BaseModel):
     message: str

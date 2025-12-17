@@ -18,7 +18,8 @@ async def initiate_interview(request: InitiateInterviewRequest):
         interview = create_interview(
             deal_id=request.deal_id,
             founder_email=request.founder_email,
-            founder_name=request.founder_name
+            founder_name=request.founder_name,
+            selected_fields=request.selected_fields
         )
         
         # Try to send email
@@ -55,8 +56,10 @@ async def initiate_interview(request: InitiateInterviewRequest):
 
 @router.delete("/reset/{deal_id}")
 async def reset_interview(deal_id: str):
-    """Delete interview for a deal"""
+    """Reset interview for a deal and regenerate draft with issues"""
     try:
+        from services.interview_service import generate_draft_interview
+        
         deal_ref = db.collection('deals').document(deal_id)
         deal_doc = deal_ref.get()
         
@@ -68,12 +71,72 @@ async def reset_interview(deal_id: str):
         if 'interview' not in deal_data:
             raise HTTPException(status_code=404, detail="No interview found for this deal")
         
+        # Delete the existing interview
         deal_ref.update({"interview": firestore.DELETE_FIELD})
+        
+        # Regenerate draft interview with issues
+        print(f"[{deal_id}] Regenerating draft interview after reset...")
+        has_questions = generate_draft_interview(deal_id)
         
         return {
             "success": True,
-            "message": "Interview deleted successfully",
-            "deal_id": deal_id
+            "message": "Interview reset successfully. New draft generated.",
+            "deal_id": deal_id,
+            "has_questions": has_questions
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/generate/{deal_id}")
+async def generate_interview_questions(deal_id: str):
+    """Generate interview questions for a deal"""
+    try:
+        from services.interview_service import generate_draft_interview
+        
+        deal_ref = db.collection('deals').document(deal_id)
+        deal_doc = deal_ref.get()
+        
+        if not deal_doc.exists:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        
+        deal_data = deal_doc.to_dict()
+        
+        # Check if interview already exists
+        if 'interview' in deal_data and deal_data['interview'].get('issues'):
+            return {
+                "success": True,
+                "message": "Interview questions already exist.",
+                "deal_id": deal_id,
+                "total_questions": len(deal_data['interview'].get('issues', [])),
+                "already_exists": True
+            }
+        
+        # Generate draft interview with issues
+        print(f"[{deal_id}] Generating interview questions on demand...")
+        has_questions = generate_draft_interview(deal_id)
+        
+        if not has_questions:
+            return {
+                "success": True,
+                "message": "No questions needed. The memo appears complete.",
+                "deal_id": deal_id,
+                "total_questions": 0,
+                "already_exists": False
+            }
+        
+        # Get the generated questions count
+        updated_deal = deal_ref.get().to_dict()
+        total_questions = len(updated_deal.get('interview', {}).get('issues', []))
+        
+        return {
+            "success": True,
+            "message": f"Generated {total_questions} interview questions.",
+            "deal_id": deal_id,
+            "total_questions": total_questions,
+            "already_exists": False
         }
     
     except HTTPException:

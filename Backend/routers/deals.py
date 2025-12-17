@@ -16,9 +16,12 @@ from services import (
     generate_deal_id,
     create_word_document,
     extract_cma_data,
-    verify_claims_with_google
+    verify_claims_with_google,
+    augment_cma_with_web_search
 )
-from services.excel_extraction import extract_text_from_excel
+from services.credit_service import CreditService, parse_cma_to_model
+from models.credit_schemas import UserProfile, TrustTier
+from services.excel_extraction import extract_text_from_excel, extract_sheets_from_excel
 
 router = APIRouter(prefix="/api", tags=["deals"])
 
@@ -61,6 +64,7 @@ bucket = storage_client.bucket(settings.GCS_BUCKET_NAME)
 async def upload_file(
     file: Optional[UploadFile] = File(None),
     cma_report: Optional[UploadFile] = File(None),
+    loan_amount_requested: Optional[str] = Form(None),
     processing_mode: str = "research", # Default to research
     request: Request = None,
     current_user: str = Depends(get_current_user)
@@ -91,15 +95,16 @@ async def upload_file(
         # Validate processing mode - overwritten to Force Research
         processing_mode = "research"
         
-        # Validate input: both files function be provided
-        if not file or not cma_report:
-            raise HTTPException(status_code=400, detail="Both Pitch Deck (PDF) and CMA Report (PDF/Excel) are required.")
+        # Validate input: CMA is required, Pitch Deck is optional
+        if not cma_report:
+            raise HTTPException(status_code=400, detail="CMA Report (PDF/Excel) is required.")
             
         deal_id = generate_deal_id()
         
-        # Determine input type and process accordingly
+        # Handle optional pitch deck
         pitch_deck_url = ""
         mime_type = "text/plain"
+        file_content = None
         
         if file:
             file_content = await file.read()
@@ -137,7 +142,8 @@ async def upload_file(
                 "processed_at": None,
                 "error": None,
                 "sector": "",
-                "founder_names": []
+                "founder_names": [],
+                "loan_amount_requested": loan_amount_requested or ""
             },
             "public_data": {
                 "competitors": [],
@@ -161,11 +167,13 @@ async def upload_file(
             start_time = time.time()
             step_start = time.time()
             
-            # Validate pitch deck is PDF
-            if mime_type != "application/pdf":
-                raise HTTPException(status_code=400, detail=f"Unsupported Pitch Deck file type: {mime_type}. Only PDF is supported.")
-            
-            print(f"[{deal_id}] ✅ Pitch Deck PDF received ({len(file_content)} bytes) - will send directly to Gemini")
+            # Validate pitch deck is PDF (only if provided)
+            if file_content:
+                if mime_type != "application/pdf":
+                    raise HTTPException(status_code=400, detail=f"Unsupported Pitch Deck file type: {mime_type}. Only PDF is supported.")
+                print(f"[{deal_id}] ✅ Pitch Deck PDF received ({len(file_content)} bytes) - will send directly to Gemini")
+            else:
+                print(f"[{deal_id}] ℹ️ No Pitch Deck provided - processing CMA only")
             extraction_time = time.time() - step_start
             
             # --- CMA REPORT EXTRACTION ---
@@ -173,6 +181,7 @@ async def upload_file(
             cma_text = ""
             cma_pages = 0
             cma_url = ""
+            cma_structured_data = {}  # Will be populated during CMA extraction
             
             if cma_report:
                 print(f"[{deal_id}] Processing CMA Report...")
@@ -194,78 +203,219 @@ async def upload_file(
                     cma_text = cma_data.get('text', '')
                     cma_pages = cma_data.get('pages', 0)
                     
-                    # Update Firestore with CMA text
+                    # Also extract structured sheet data for dynamic tab rendering
+                    print(f"[{deal_id}] Extracting structured sheet data...")
+                    sheets_data = extract_sheets_from_excel(cma_content)
+                    
+                    print(f"[{deal_id}] CMA Excel raw extraction: {cma_pages} sheets, {len(cma_text)} chars of text")
+                    print(f"[{deal_id}] Structured sheets: {sheets_data.get('sheet_count', 0)} sheets")
+                    
+                    # Update Firestore with CMA text AND dynamic sheets
                     deal_ref.update({
                         "extracted_text.cma_report": {
                             "text": cma_text, 
                             "pages": cma_pages,
                             "url": cma_url
                         },
-                        "raw_files.cma_report_url": cma_url
+                        "raw_files.cma_report_url": cma_url,
+                        "cma_data": sheets_data  # Store sheet-based structure for dynamic tabs
                     })
                     print(f"[{deal_id}] ✅ CMA Excel extraction complete - {cma_pages} sheets")
                     
-                    # Extract structured CMA data from text
-                    if cma_text:
-                        step_start = time.time()
-                        print(f"[{deal_id}] Extracting structured CMA data from Excel...")
-                        cma_structured_data = await extract_cma_data(raw_text=cma_text)
-                        cma_extraction_time = time.time() - step_start
-                        
-                        deal_ref.update({
-                            "cma_data": cma_structured_data
-                        })
-                        print(f"[{deal_id}] ✅ CMA structured data extracted")
-                        print(f"[{deal_id}] ⏱️  CMA Parsing Time: {cma_extraction_time:.2f}s\n")
+                    # For Excel: Use AI-powered extraction with Gemini
+                    # This handles varying layouts by using semantic understanding
+                    step_start = time.time()
+                    print(f"[{deal_id}] 🤖 Using AI-powered CMA extraction with Gemini...")
+                    from services.document_ai import extract_cma_with_gemini
+                    
+                    cma_structured_data = await extract_cma_with_gemini(cma_text)
+                    cma_extraction_time = time.time() - step_start
+                    
+                    # Save to cma_structured (NOT cma_data, which has sheet-based data for UI)
+                    deal_ref.update({
+                        "cma_structured": cma_structured_data
+                    })
+                    print(f"[{deal_id}] ✅ CMA structured data extracted via AI")
+                    print(f"[{deal_id}] ⏱️  CMA AI Extraction Time: {cma_extraction_time:.2f}s\n")
+                    
+                    # === DETAILED SCHEMA LOGGING ===
+                    print(f"\n{'='*60}")
+                    print(f"[{deal_id}] 📋 EXTRACTED CMA SCHEMA DATA (AI-Powered)")
+                    print(f"{'='*60}")
+                    import json
+                    print(json.dumps(cma_structured_data, indent=2, default=str))
+                    print(f"{'='*60}\n")
                         
                 elif cma_ext == "pdf":
-                    # Send CMA PDF directly to Gemini (bypasses Document AI 30-page limit)
-                    print(f"[{deal_id}] 📄 Sending CMA PDF directly to Gemini...")
+                    # Use Document AI for structured CMA extraction from PDF
+                    print(f"[{deal_id}] 📄 Extracting CMA PDF using Document AI...")
                     
-                    # Update Firestore with CMA URL (text will be empty since we're using direct PDF)
+                    # Update Firestore with CMA URL
                     deal_ref.update({
                         "extracted_text.cma_report": {
                             "text": "", 
                             "pages": 0,
                             "url": cma_url,
-                            "processing_method": "direct_pdf"
+                            "processing_method": "document_ai"
                         },
                         "raw_files.cma_report_url": cma_url
                     })
                     
-                    # Extract structured CMA data directly from PDF bytes
+                    # Extract structured CMA data using Document AI
                     step_start = time.time()
-                    cma_structured_data = await extract_cma_data(pdf_bytes=cma_content)
+                    from services.document_ai import extract_cma_with_docai
+                    cma_structured_data = await extract_cma_with_docai(
+                        file_content=cma_content,
+                        mime_type="application/pdf"
+                    )
                     cma_extraction_time = time.time() - step_start
                     
+                    # Save to BOTH cma_data (legacy) and cma_structured (new frontend expects this)
                     deal_ref.update({
-                        "cma_data": cma_structured_data
+                        "cma_data": cma_structured_data,
+                        "cma_structured": cma_structured_data
                     })
-                    print(f"[{deal_id}] ✅ CMA structured data extracted directly from PDF")
+                    print(f"[{deal_id}] ✅ CMA structured data extracted via Document AI")
                     print(f"[{deal_id}] ⏱️  CMA Parsing Time: {cma_extraction_time:.2f}s\n")
+                    
+                    # === DETAILED SCHEMA LOGGING ===
+                    print(f"\n{'='*60}")
+                    print(f"[{deal_id}] 📋 EXTRACTED CMA SCHEMA DATA (PDF)")
+                    print(f"{'='*60}")
+                    import json
+                    print(json.dumps(cma_structured_data, indent=2, default=str))
+                    print(f"{'='*60}\n")
                 
                 print(f"[{deal_id}] ⏱️  Extraction Time: {extraction_time:.2f}s\n")
             
             # Get current weightage
             deal_data = deal_ref.get().to_dict()
             weightage = deal_data['metadata']['weightage']
+            # Use local cma_structured_data if available, else try from Firestore
+            if not cma_structured_data:
+                cma_structured_data = deal_data.get('cma_data', {})
             
-            # Analyze with Gemini - send PDF directly (multimodal)
+            # Analyze with Gemini - send PDF directly (multimodal) or use CMA text
             step_start = time.time()
-            print(f"[{deal_id}] Starting Gemini analysis (Research Mode) - sending PDF directly...")
-            analysis = await analyze_with_gemini(
-                pdf_bytes=file_content,  # Send PDF bytes directly
-                cma_text=cma_text,  # Include CMA text for financial context
-                weightage=weightage,
-                processing_mode="research"  # Force research mode
-            )
+            if file_content:
+                print(f"[{deal_id}] Starting Gemini analysis (Research Mode) - sending PDF directly...")
+                analysis = await analyze_with_gemini(
+                    pdf_bytes=file_content,  # Send PDF bytes directly
+                    cma_text=cma_text,  # Include CMA text for financial context
+                    weightage=weightage,
+                    processing_mode="research"  # Force research mode
+                )
+            else:
+                # CMA-only mode: Perform Web-Augmented Analysis using Google Search
+                print(f"[{deal_id}] CMA-Only Mode - Performing Web-Augmented Analysis...")
+                
+                # 1. Perform Web Search to get Qualitative Data (Overview, Market, Competitors)
+                web_start = time.time()
+                web_analysis = await augment_cma_with_web_search(cma_text, cma_structured_data)
+                print(f"[{deal_id}] ⏱️  Web Search Analysis Time: {time.time() - web_start:.2f}s")
+                
+                # 2. POPULATE FINANCIALS FROM CMA
+                # Default empty financials with cma_tables support
+                financials = {
+                    "arr_mrr": {},
+                    "burn_and_runway": {},
+                    "projections": [],
+                    "cma_tables": cma_structured_data if cma_structured_data else {}
+                }
+                
+                if cma_structured_data:
+                    # Try to extracting projections from Operating Statement for backward compatibility
+                    op_statement = cma_structured_data.get('operating_statement', {})
+                    years = op_statement.get('years', [])
+                    rows = op_statement.get('rows', [])
+                    
+                    # specific rows to look for
+                    revenue_row = next((r['values'] for r in rows if 'revenue' in r['particulars'].lower() or 'sales' in r['particulars'].lower()), [])
+                    pat_row = next((r['values'] for r in rows if 'profit after tax' in r['particulars'].lower() or 'pat' in r['particulars'].lower()), [])
+                    
+                    projections = []
+                    for i, year in enumerate(years):
+                        proj_entry = {"year": year}
+                        if i < len(revenue_row): proj_entry["revenue"] = revenue_row[i]
+                        if i < len(pat_row): proj_entry["pat"] = pat_row[i]
+                        projections.append(proj_entry)
+                    
+                    financials["projections"] = projections
+                    print(f"[{deal_id}] Populated {len(projections)} projection years from CMA")
+
+                
+                # 3. RUN CREDIT ENGINE
+                credit_result_dict = None
+                try:
+                    if cma_structured_data:
+                        print(f"[{deal_id}] Running automatic Credit Analysis...")
+                        # Convert to CMAModel
+                        from services.credit_service import parse_cma_to_model
+                        cma_model = parse_cma_to_model(cma_structured_data)
+                        
+                        # Create UserProfile
+                        from models.credit_schemas import UserProfile
+                        # Extract info from General Info or use defaults
+                        # PRIORITIZE info found from Web Search!
+                        web_overview = web_analysis.get('company_overview', {})
+                        gen_info = cma_structured_data.get('general_info', {})
+                        
+                        user_profile = UserProfile(
+                            deal_id=deal_id,
+                            loan_amount_requested=float(loan_amount_requested) if loan_amount_requested and loan_amount_requested.replace('.','',1).isdigit() else 5000000.0, # Default 50L
+                            applicant_name=web_overview.get('name') or gen_info.get('Name of the Unit') or gen_info.get('Name') or "Unknown Applicant",
+                            entity_type=gen_info.get('Constitution') or "Pvt Ltd",
+                            industry_sector=web_overview.get('sector') or gen_info.get('Line of Activity') or "General",
+                            vintage_years=3 # Default assumption if not found
+                        )
+                        
+                        from services.credit_service import CreditService
+                        credit_service = CreditService()
+                        credit_result = credit_service.analyze(cma_model, user_profile)
+                        credit_result_dict = credit_result.dict()
+                        
+                        deal_ref.update({"credit_analysis": credit_result_dict})
+                        print(f"[{deal_id}] 🔍 Credit Analysis Result: Status={credit_result.status}, Scheme={credit_result.eligible_scheme}, WaterfallLen={len(credit_result.waterfall_data)}")
+                        import json
+                        # print(json.dumps(credit_result_dict, indent=2, default=str)) # limiting log spam
+                        print(f"[{deal_id}] ✅ Credit Analysis complete")
+                except Exception as e:
+                    print(f"[{deal_id}] ❌ Credit Engine Failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # 4. CONSTRUCT FULL MEMO
+                analysis = {
+                    "company_overview": web_analysis.get('company_overview', {}),
+                    "market_analysis": web_analysis.get('market_analysis', {}),
+                    "products_and_services": web_analysis.get('products_and_services', []),
+                    "financials": financials,
+                    "credit_analysis": credit_result_dict if 'credit_result_dict' in locals() else None,
+                    "claims_analysis": [],
+                    "risk_metrics": {},
+                    "risks_and_mitigation": [],
+                    "conclusion": {
+                        "summary": f"This analysis is based on the CMA report ({cma_pages} pages) and web research for {web_analysis.get('company_overview', {}).get('name', 'the company')}.",
+                        "strengths": ["Financial data available from CMA", "Web-verified market context"],
+                        "weaknesses": ["No pitch deck provided", "Qualitative insights derived from public web data"],
+                        "overall_recommendation": "PENDING - CMA Only"
+                    },
+                    "_weightage_used": weightage
+                }
+                print(f"[{deal_id}] ✅ Web-Augmented Memo created for CMA-only analysis")
             analysis_time = time.time() - step_start
             
             # Extract metadata from analysis result (instead of separate extraction)
             company_name = analysis.get('company_overview', {}).get('name', 'Unknown')
             sector = analysis.get('company_overview', {}).get('sector', 'Unknown')
             founders = analysis.get('company_overview', {}).get('founders', [])
-            founder_names = [f.get('name', '') for f in founders if f.get('name')]
+            founder_names = []
+            for f in founders:
+                if isinstance(f, str):
+                    founder_names.append(f)
+                elif isinstance(f, dict):
+                    name = f.get('name')
+                    if name: founder_names.append(name)
             
             deal_ref.update({
                 "metadata.company_name": company_name,
@@ -300,6 +450,79 @@ async def upload_file(
             print(f"[{deal_id}] Generating draft interview questions...")
             from services.interview_service import generate_draft_interview
             generate_draft_interview(deal_id)
+            
+            # Run Credit Analysis if CMA data is available
+            try:
+                updated_deal = deal_ref.get().to_dict()
+                # Prefer cma_structured (has audited/projected financials) over cma_data (may have raw sheet structure)
+                cma_for_credit = updated_deal.get('cma_structured') or updated_deal.get('cma_data')
+                if cma_for_credit:
+                    print(f"[{deal_id}] 💳 Running Credit Analysis...")
+                    print(f"[{deal_id}] 📊 CMA source keys: {list(cma_for_credit.keys()) if isinstance(cma_for_credit, dict) else 'not a dict'}")
+                    from services.credit_service import CreditService, parse_cma_to_model
+                    from models.credit_schemas import UserProfile
+                    
+                    cma_model = parse_cma_to_model(cma_for_credit)
+                    
+                    # Build user profile from analysis
+                    memo = updated_deal.get('memo', {}).get('draft_v1', {})
+                    company = memo.get('company_overview', {})
+                    financials = memo.get('financials', {})
+                    funding_ask = financials.get('current_raise', {})
+                    
+                    # Parse funding amount
+                    from routers.credit import parse_amount_string
+                    loan_amount = parse_amount_string(str(funding_ask.get('amount', '0')))
+                    
+                    # Estimate vintage
+                    founding_year = company.get('founding_year', datetime.now().year)
+                    vintage = datetime.now().year - int(founding_year) if founding_year else 0
+                    
+                    user_profile = UserProfile(
+                        deal_id=deal_id,
+                        entity_type=company.get('legal_structure', 'Pvt Ltd'),
+                        vintage_years=vintage,
+                        loan_amount_requested=loan_amount if loan_amount > 0 else 50_00_000,  # Default 50L
+                        has_collateral=False,
+                        dpiit_recognized='dpiit' in str(company).lower(),
+                        industry_sector=updated_deal.get('metadata', {}).get('sector', ''),
+                        is_profitable_2_years=False
+                    )
+                    
+                    credit_service = CreditService()
+                    credit_result = credit_service.analyze(cma_model, user_profile)
+                    
+                    # Get the credit result as dict
+                    credit_analysis_dict = credit_result.dict()
+                    
+                    # Merge in extracted ratios from key_ratios_summary if available
+                    # These are more accurate than recalculated values
+                    key_ratios = cma_for_credit.get('key_ratios_summary', {})
+                    current_year_ratios = key_ratios.get('current_year', {})
+                    if current_year_ratios:
+                        print(f"[{deal_id}] 📊 Overriding with extracted ratios from key_ratios_summary")
+                        if current_year_ratios.get('dscr'):
+                            credit_analysis_dict['avg_dscr'] = float(current_year_ratios.get('dscr', 0))
+                        if current_year_ratios.get('tol_tnw_ratio'):
+                            credit_analysis_dict['tol_tnw'] = float(current_year_ratios.get('tol_tnw_ratio', 0))
+                        if current_year_ratios.get('current_ratio'):
+                            credit_analysis_dict['current_ratio'] = float(current_year_ratios.get('current_ratio', 0))
+                    
+                    # Add key_ratios_summary for frontend hover display
+                    credit_analysis_dict['key_ratios_summary'] = key_ratios
+                    
+                    deal_ref.update({
+                        'credit_analysis': credit_analysis_dict,
+                        'metadata.credit_analyzed_at': datetime.utcnow().isoformat() + "Z"
+                    })
+                    
+                    print(f"[{deal_id}] ✅ Credit Analysis complete: {credit_result.status} - {credit_result.eligible_scheme}")
+                else:
+                    print(f"[{deal_id}] ℹ️ Skipping credit analysis (no CMA data)")
+            except Exception as credit_error:
+                print(f"[{deal_id}] ⚠️ Credit analysis failed (non-blocking): {str(credit_error)}")
+                import traceback
+                traceback.print_exc()
             
             # Only generate investment decision for research mode - DISABLED
             # if processing_mode == "research":
@@ -463,17 +686,33 @@ async def delete_deal(
             raise HTTPException(status_code=403, detail="Access denied")
         
         try:
-            if 'raw_files' in deal_data and 'pitch_deck_url' in deal_data['raw_files']:
-                gcs_path = deal_data['raw_files']['pitch_deck_url'].replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
-                blob = bucket.blob(gcs_path)
-                blob.delete()
+            # Helper to delete file (GCS or Local)
+            def delete_file(file_url: str):
+                if not file_url: return
+                if file_url.startswith("gs://"):
+                    gcs_path = file_url.replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
+                    blob = bucket.blob(gcs_path)
+                    blob.delete()
+                else:
+                    # Local file: extract path from URL or assume logical path
+                    # URL: http://host/uploads/deals/{id}/file.ext
+                    if settings.LOCAL_UPLOAD_DIR in file_url:
+                        # Extract relative path starting from LOCAL_UPLOAD_DIR
+                        # Simple hack: split by LOCAL_UPLOAD_DIR and take last part
+                        part = file_url.split(f"/{settings.LOCAL_UPLOAD_DIR}/")[-1]
+                        local_path = os.path.join(settings.LOCAL_UPLOAD_DIR, part)
+                        if os.path.exists(local_path):
+                            os.remove(local_path)
             
-            if 'memo' in deal_data and 'docx_url' in deal_data['memo']:
-                gcs_path = deal_data['memo']['docx_url'].replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
-                blob = bucket.blob(gcs_path)
-                blob.delete()
+            if 'raw_files' in deal_data:
+                delete_file(deal_data['raw_files'].get('pitch_deck_url'))
+                delete_file(deal_data['raw_files'].get('cma_report_url'))
+            
+            if 'memo' in deal_data:
+                delete_file(deal_data['memo'].get('docx_url'))
+                
         except Exception as e:
-            print(f"Error deleting GCS files: {str(e)}")
+            print(f"Error deleting files: {str(e)}")
         
         deal_ref.delete()
         
@@ -509,18 +748,34 @@ async def download_memo(
         if 'memo' not in deal_data or 'docx_url' not in deal_data['memo']:
             raise HTTPException(status_code=404, detail="Memo not yet generated")
         
-        gcs_path = deal_data['memo']['docx_url'].replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
-        blob = bucket.blob(gcs_path)
-        file_content = blob.download_as_bytes()
-        
+        url = deal_data['memo']['docx_url']
         company_name = deal_data['metadata'].get('company_name', 'Unknown')
         filename = f"{company_name}_Investment_Memo_{deal_id}.docx"
         
-        return StreamingResponse(
-            io.BytesIO(file_content),
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+        if url.startswith("gs://"):
+            gcs_path = url.replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
+            blob = bucket.blob(gcs_path)
+            file_content = blob.download_as_bytes()
+            return StreamingResponse(
+                io.BytesIO(file_content),
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        else:
+             # Local file
+             # Reconstruct path: uploads/deals/{deal_id}/memo.docx 
+             # (Actually create_word_document might name it differently, but let's try to find it by URL structure)
+             part = url.split(f"/{settings.LOCAL_UPLOAD_DIR}/")[-1]
+             local_path = os.path.join(settings.LOCAL_UPLOAD_DIR, part)
+             
+             if not os.path.exists(local_path):
+                 raise HTTPException(status_code=404, detail="Local file not found")
+                 
+             return StreamingResponse(
+                open(local_path, "rb"),
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
     
     except HTTPException:
         raise
@@ -542,18 +797,31 @@ async def download_pitch_deck(deal_id: str):
         if 'raw_files' not in deal_data or 'pitch_deck_url' not in deal_data['raw_files']:
             raise HTTPException(status_code=404, detail="Pitch deck not found")
         
-        gcs_path = deal_data['raw_files']['pitch_deck_url'].replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
-        blob = bucket.blob(gcs_path)
-        file_content = blob.download_as_bytes()
-        
+        url = deal_data['raw_files']['pitch_deck_url']
         company_name = deal_data['metadata'].get('company_name', 'Unknown')
         filename = f"{company_name}_Pitch_Deck_{deal_id}.pdf"
         
-        return StreamingResponse(
-            io.BytesIO(file_content),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+        if url.startswith("gs://"):
+            gcs_path = url.replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
+            blob = bucket.blob(gcs_path)
+            file_content = blob.download_as_bytes()
+            return StreamingResponse(
+                io.BytesIO(file_content),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        else:
+             part = url.split(f"/{settings.LOCAL_UPLOAD_DIR}/")[-1]
+             local_path = os.path.join(settings.LOCAL_UPLOAD_DIR, part)
+             
+             if not os.path.exists(local_path):
+                 raise HTTPException(status_code=404, detail="Local file not found")
+                 
+             return StreamingResponse(
+                open(local_path, "rb"),
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
     
     except HTTPException:
         raise
@@ -575,25 +843,38 @@ async def download_cma_report(deal_id: str):
         if 'raw_files' not in deal_data or 'cma_report_url' not in deal_data['raw_files']:
             raise HTTPException(status_code=404, detail="CMA report not found")
         
-        gcs_path = deal_data['raw_files']['cma_report_url'].replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
-        blob = bucket.blob(gcs_path)
-        file_content = blob.download_as_bytes()
-        
+        url = deal_data['raw_files']['cma_report_url']
         company_name = deal_data['metadata'].get('company_name', 'Unknown')
         
-        # Determine file type based on extension
-        if gcs_path.endswith('.xlsx'):
+        is_xlsx = url.endswith('.xlsx')
+        if is_xlsx:
             filename = f"{company_name}_CMA_Report_{deal_id}.xlsx"
             media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         else:
             filename = f"{company_name}_CMA_Report_{deal_id}.pdf"
             media_type = "application/pdf"
-        
-        return StreamingResponse(
-            io.BytesIO(file_content),
-            media_type=media_type,
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
+            
+        if url.startswith("gs://"):
+            gcs_path = url.replace(f"gs://{settings.GCS_BUCKET_NAME}/", "")
+            blob = bucket.blob(gcs_path)
+            file_content = blob.download_as_bytes()
+            return StreamingResponse(
+                io.BytesIO(file_content),
+                media_type=media_type,
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+        else:
+             part = url.split(f"/{settings.LOCAL_UPLOAD_DIR}/")[-1]
+             local_path = os.path.join(settings.LOCAL_UPLOAD_DIR, part)
+             
+             if not os.path.exists(local_path):
+                 raise HTTPException(status_code=404, detail="Local file not found")
+                 
+             return StreamingResponse(
+                open(local_path, "rb"),
+                media_type=media_type,
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
     
     except HTTPException:
         raise

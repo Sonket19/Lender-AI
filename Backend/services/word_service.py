@@ -29,11 +29,14 @@ def create_word_document(analysis: Dict[str, Any], deal_id: str) -> str:
         if founders:
             doc.add_heading('Founders', 2)
             for founder in founders:
-                doc.add_paragraph(f"Name: {founder.get('name', 'N/A')}", style='List Bullet')
-                doc.add_paragraph(f"Education: {founder.get('education', 'N/A')}", style='List Bullet 2')
-                doc.add_paragraph(f"Background: {founder.get('professional_background', 'N/A')}", style='List Bullet 2')
-                if founder.get('previous_ventures'):
-                    doc.add_paragraph(f"Previous Ventures: {founder.get('previous_ventures')}", style='List Bullet 2')
+                if isinstance(founder, str):
+                    doc.add_paragraph(f"Name: {founder}", style='List Bullet')
+                else:
+                    doc.add_paragraph(f"Name: {founder.get('name', 'N/A')}", style='List Bullet')
+                    doc.add_paragraph(f"Education: {founder.get('education', 'N/A')}", style='List Bullet 2')
+                    doc.add_paragraph(f"Background: {founder.get('professional_background', 'N/A')}", style='List Bullet 2')
+                    if founder.get('previous_ventures'):
+                        doc.add_paragraph(f"Previous Ventures: {founder.get('previous_ventures')}", style='List Bullet 2')
         
         # Technologies
         if company_overview.get('technologies_used'):

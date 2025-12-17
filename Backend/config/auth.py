@@ -45,20 +45,35 @@ async def get_current_user(
     Raises:
         HTTPException: If token is invalid or missing
     """
+    import time
+    
     try:
         # Get the token from the Authorization header
         token = credentials.credentials
         
-        # Verify the token
-        decoded_token = auth.verify_id_token(token)
+        # Verify the token with clock tolerance
+        # Firebase doesn't have built-in clock_skew, but we can handle it
+        try:
+            decoded_token = auth.verify_id_token(token, check_revoked=False)
+        except auth.InvalidIdTokenError as e:
+            error_message = str(e)
+            # Handle clock skew - "Token used too early" error
+            if "Token used too early" in error_message or "iat" in error_message.lower():
+                print(f"⚠️ Clock skew detected, waiting 2 seconds and retrying...")
+                time.sleep(2)  # Wait for clock to catch up
+                decoded_token = auth.verify_id_token(token, check_revoked=False)
+            else:
+                raise  # Re-raise if it's a different error
         
         # Return the user ID
         return decoded_token['uid']
         
-    except auth.InvalidIdTokenError:
+    except auth.InvalidIdTokenError as e:
+        print(f"!!! AUTH ERROR: Invalid ID Token: {e}")
+        print("💡 TIP: Sync your computer clock - Run: w32tm /resync")
         raise HTTPException(
             status_code=401,
-            detail="Invalid authentication token"
+            detail="Invalid authentication token. Please sync your computer clock."
         )
     except auth.ExpiredIdTokenError:
         raise HTTPException(

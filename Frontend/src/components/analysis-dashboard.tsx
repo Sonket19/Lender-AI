@@ -5,48 +5,39 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { AnalysisData } from '@/lib/types';
 import CompanyOverview from './company-overview';
 import MarketAnalysis from './market-analysis';
-// import BusinessModel from './business-model';
-import CMAFinancials from './cma-financials';
+
 import CreditAnalysis from './credit-analysis';
+import CreditEngine from './credit-engine';
 import FloatingChat from './floating-chat';
 import IssuesTab from './issues-tab';
 import InterviewInsights from './interview-insights';
-// import InvestmentDecision from './investment-decision';
+import FinancialStatements from './financial-statements';
 import { FactCheck } from "@/components/fact-check";
 import {
     Briefcase,
     ShoppingCart,
-    BarChart,
     Banknote,
     ShieldAlert,
-    MessageCircle,
-    SlidersHorizontal,
     Loader2,
     FileArchive,
     FileText,
     Video,
     Mic,
     Type,
-    CalendarPlus,
     AlertTriangle,
     MessageSquareQuote,
-    Handshake,
-    ShieldCheck
+    ShieldCheck,
+    Zap
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
     Dialog,
     DialogContent,
     DialogDescription,
-    DialogFooter,
     DialogHeader,
     DialogTitle,
     DialogTrigger,
-    DialogClose,
 } from "@/components/ui/dialog"
-import { Slider } from '@/components/ui/slider';
-import { Label } from '@/components/ui/label';
-import { Input } from '@/components/ui/input';
 import { Badge } from './ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { authenticatedFetch } from '@/lib/api-client';
@@ -67,21 +58,21 @@ const NoDataComponent = () => (
 
 export default function AnalysisDashboard({ analysisData: initialAnalysisData, startupId }: AnalysisDashboardProps) {
     const [analysisData, setAnalysisData] = useState(initialAnalysisData);
-    const [isSettingMeeting, setIsSettingMeeting] = useState(false);
-    const [isMeetingDialogOpen, setIsMeetingDialogOpen] = useState(false);
-
-    const [founderName, setFounderName] = useState('');
-    const [founderEmail, setFounderEmail] = useState('');
     const [downloadingFile, setDownloadingFile] = useState<string | null>(null);
-    // const [isGeneratingDecision, setIsGeneratingDecision] = useState(false);
-    // const [investmentDecision, setInvestmentDecision] = useState<any>(null);
     const { toast } = useToast();
 
-    useEffect(() => {
-        if (initialAnalysisData?.metadata?.founder_names?.length > 0) {
-            setFounderName(initialAnalysisData.metadata.founder_names[0]);
+    // Function to refresh deal data after interview reset
+    const handleInterviewReset = async () => {
+        try {
+            const response = await authenticatedFetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/deals/${startupId}`);
+            if (response.ok) {
+                const updatedData = await response.json();
+                setAnalysisData(updatedData);
+            }
+        } catch (error) {
+            console.error('Error refreshing deal data:', error);
         }
-    }, [initialAnalysisData]);
+    };
 
     // Poll for investment decision updates if not yet generated
     // Poll for investment decision updates if not yet generated - REMOVED
@@ -197,54 +188,15 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
         }
     };
 
-    const handleSetMeeting = async () => {
-        setIsSettingMeeting(true);
-        try {
-            const response = await authenticatedFetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/api/interviews/initiate`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    deal_id: startupId,
-                    founder_email: founderEmail,
-                    founder_name: founderName
-                })
-            });
-
-            const result = await response.json();
-
-            if (!response.ok) {
-                throw new Error(result.detail || 'Failed to send interview invitation.');
-            }
-
-            if (result.success === false) {
-                throw new Error(result.detail || 'Failed to send interview invitation.');
-            }
-
-            toast({
-                title: 'Invitation Sent',
-                description: `An interview invitation has been sent to ${founderName}.`,
-            });
-            setIsMeetingDialogOpen(false); // Close dialog on success
-            setFounderEmail(''); // Reset email field
-
-        } catch (error: any) {
-            toast({
-                variant: 'destructive',
-                title: 'Failed to Set Meeting',
-                description: error.message || 'An unexpected error occurred.',
-            });
-        } finally {
-            setIsSettingMeeting(false);
-        }
-    };
-
 
     const memo = analysisData?.memo?.draft_v1;
     const rawFiles = analysisData?.raw_files || {};
     const interview = analysisData?.interview;
     const insights = memo?.interview_insights;
+    const hasMemo = memo && Object.keys(memo).length > 0;
 
-    const showIssuesTab = interview?.status !== 'completed' && interview?.issues && interview.issues.length > 0;
+    // Show Issues tab if: there's a memo (can generate questions) AND interview is not completed
+    const showIssuesTab = hasMemo && interview?.status !== 'completed';
     const showInsightsTab = interview?.status === 'completed' && insights && Object.keys(insights).length > 0;
     // const hasInvestmentDecision = analysisData?.investment_decision || investmentDecision;
 
@@ -412,51 +364,6 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
                             </div>
                         </DialogContent>
                     </Dialog>
-                    <Dialog open={isMeetingDialogOpen} onOpenChange={setIsMeetingDialogOpen}>
-                        <DialogTrigger asChild>
-                            <Button variant="outline"><CalendarPlus /> Set Meeting</Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-[425px]">
-                            <DialogHeader>
-                                <DialogTitle className="font-headline text-2xl flex items-center gap-3"><CalendarPlus className="w-7 h-7 text-primary" />Set Up Interview</DialogTitle>
-                                <DialogDescription>
-                                    Send an interview invitation to the startup founder.
-                                </DialogDescription>
-                            </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label htmlFor="name" className="text-right">
-                                        Name
-                                    </Label>
-                                    <Input
-                                        id="name"
-                                        value={founderName}
-                                        onChange={(e) => setFounderName(e.target.value)}
-                                        className="col-span-3"
-                                    />
-                                </div>
-                                <div className="grid grid-cols-4 items-center gap-4">
-                                    <Label htmlFor="email" className="text-right">
-                                        Email
-                                    </Label>
-                                    <Input
-                                        id="email"
-                                        type="email"
-                                        placeholder="founder@example.com"
-                                        value={founderEmail}
-                                        onChange={(e) => setFounderEmail(e.target.value)}
-                                        className="col-span-3"
-                                    />
-                                </div>
-                            </div>
-                            <DialogFooter>
-                                <Button onClick={handleSetMeeting} disabled={isSettingMeeting || !founderName || !founderEmail}>
-                                    {isSettingMeeting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                    Send Invitation
-                                </Button>
-                            </DialogFooter>
-                        </DialogContent>
-                    </Dialog>
 
 
                 </div>
@@ -468,10 +375,13 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
                     <TabsTrigger value="market" className="h-12"><ShoppingCart className="mr-2" />Market</TabsTrigger>
                     {/* <TabsTrigger value="model" className="h-12"><BarChart className="mr-2" />Business Model</TabsTrigger> */}
                     <TabsTrigger value="financials" className="h-12"><Banknote className="mr-2" />Financials</TabsTrigger>
+
                     {/* Hide Risk tab for fast mode */}
                     {analysisData?.metadata?.processing_mode !== 'fast' && (
                         <TabsTrigger value="risks" className="h-12"><ShieldAlert className="mr-2" />Credit</TabsTrigger>
                     )}
+                    {/* Credit Engine Tab - Shows new waterfall analysis */}
+                    <TabsTrigger value="credit-engine" className="h-12"><Zap className="mr-2" />Engine</TabsTrigger>
                     {showIssuesTab && (
                         <TabsTrigger value="issues" className="h-12 text-destructive"><AlertTriangle className="mr-2" />Issues</TabsTrigger>
                     )}
@@ -491,14 +401,31 @@ export default function AnalysisDashboard({ analysisData: initialAnalysisData, s
                     {memo ? <MarketAnalysis data={memo.market_analysis} publicData={analysisData.public_data} /> : <NoDataComponent />}
                 </TabsContent>
                 <TabsContent value="financials">
-                    <CMAFinancials data={analysisData?.cma_data} />
+                    <FinancialStatements data={analysisData.cma_structured} />
                 </TabsContent>
                 <TabsContent value="risks">
                     {memo?.credit_analysis ? <CreditAnalysis data={memo.credit_analysis} /> : <NoDataComponent />}
                 </TabsContent>
+                {/* Credit Engine - New Waterfall Analysis */}
+                <TabsContent value="credit-engine">
+                    <CreditEngine
+                        data={analysisData.credit_analysis}
+                        memoCreditData={memo?.credit_analysis}
+                        dealId={startupId}
+                        loanAmountRequested={analysisData.metadata?.loan_amount_requested}
+                    />
+                </TabsContent>
                 {showIssuesTab && (
                     <TabsContent value="issues">
-                        {interview ? <IssuesTab issues={interview.issues} /> : <NoDataComponent />}
+                        {interview ? (
+                            <IssuesTab
+                                issues={interview.issues}
+                                dealId={startupId}
+                                defaultFounderName={analysisData?.metadata?.founder_names?.[0] || ''}
+                                interviewStatus={interview.status}
+                                onInterviewReset={handleInterviewReset}
+                            />
+                        ) : <NoDataComponent />}
                     </TabsContent>
                 )}
                 {showInsightsTab && (

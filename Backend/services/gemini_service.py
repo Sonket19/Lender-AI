@@ -391,7 +391,7 @@ Return your analysis in the following JSON structure:
             {{"parameter": "Collateral", "result": "None (CGTMSE Cover)", "status": "🟢 Secured"}}
         ],
         
-        "final_verdict": "Detailed recommendation statement (e.g., 'Sanction up to ₹40 Lakhs under CGTMSE scheme. Subject to Promoter Margin of 5% being deposited upfront.')"
+        "final_verdict": "Detailed recommendation statement (e.g., 'Sanction up to some Lakhs under CGTMSE scheme. Subject to Promoter Margin of 5% being deposited upfront.')"
     }},
     
     "market_analysis": {{
@@ -529,6 +529,22 @@ CRITICAL INSTRUCTIONS:
             response_text = response_text[7:-3].strip()
         elif response_text.startswith("```"):
             response_text = response_text[3:-3].strip()
+        
+        # If response doesn't start with {, try to find JSON in the response
+        if not response_text.startswith("{"):
+            # Look for JSON block in markdown code block
+            import re
+            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response_text)
+            if json_match:
+                response_text = json_match.group(1).strip()
+            else:
+                # Try to find the outermost { } block
+                json_match = re.search(r'(\{[\s\S]*\})', response_text)
+                if json_match:
+                    response_text = json_match.group(1)
+                else:
+                    print(f"Could not find JSON in response: {response_text[:500]}")
+                    raise ValueError("No JSON found in response")
         
         # Parse JSON
         analysis = json.loads(response_text)
@@ -933,78 +949,54 @@ async def extract_cma_data(raw_text: str = None, pdf_bytes: bytes = None) -> Dic
     - cash_flow: table with years and rows
     """
     try:
-        prompt = """You are a financial data extraction expert. Analyze the following CMA (Credit Monitoring Arrangement) report and extract ALL data into a structured JSON format.
+        prompt = """
+                   Role: You are a Senior Credit Officer at a financial institution.
 
-## EXTRACTION INSTRUCTIONS:
+                   Task: Extract critical financial ratios and credit metrics from the provided CMA document. Focus strictly on solvency, liquidity, and debt serviceability.
 
-### 1. General Information (general_info)
-Extract ALL key-value pairs from the general information section. Common fields include:
-- Name of the Unit, Constitution, Date of Incorporation
-- Registered Office, Factory/Unit Address
-- Line of Activity, IEC Code, Industry/Sector
-- Names of Directors/Partners, Shareholding Pattern
-- Existing Banking Arrangements, Credit Facilities Proposed
-- Primary Security, Collateral Security
-- Key Management Personnel, Unit Status
-Include ANY other fields present in the source data.
+                   Output Rules:
+                   Format: Return ONLY a valid JSON array.
+                   Structure: Create one object for each fiscal year (column).
+                   Nulls: If a ratio is not explicitly stated or calculable, return null.
+                   Units: Convert all absolute figures to full numbers. Keep ratios as decimals (e.g., 1.33).
 
-### 2. Operating Statement (operating_statement)
-Extract the Profit & Loss / Operating Statement table with:
-- "years": Array of column headers (e.g., ["FY24 (Audited)", "FY25 (Estimated)", "FY26 (Projected)", "FY27 (Projected)"])
-- "rows": Array of ALL row items, each with:
-  - "particulars": The row label (e.g., "Revenue from Operations", "EBITDA", "Profit After Tax")
-  - "values": Array of numeric values as strings for each year, in the same order as "years"
+                   Schema Definition:
 
-### 3. Balance Sheet (balance_sheet)
-Extract the Balance Sheet table with the same structure:
-- "years": Column headers
-- "rows": ALL items including Liabilities, Assets, Share Capital, Reserves, Borrowings, etc.
+                   1. Classification
+                   year: Fiscal Year (e.g. FY23)
+                   type: One of "Audited", "Provisional", "Projected"
 
-### 4. Cash Flow Statement (cash_flow)
-Extract the Cash Flow Statement table with the same structure:
-- "years": Column headers
-- "rows": ALL items including Operating Activities, Investing Activities, Financing Activities, etc.
+                   2. Credit Ratios (Priority - Extract if stated, else calculate)
+                   dscr: Debt Service Coverage Ratio. (EBITDA - Tax) / (Interest + Principal Repayment).
+                   iscr: Interest Service Coverage Ratio. (EBITDA / Interest Expense).
+                   current_ratio: Current Assets / Current Liabilities.
+                   debt_equity_ratio: Total Debt / Tangible Net Worth.
+                   tol_tnw: Total Outside Liabilities / Tangible Net Worth.
 
-## OUTPUT FORMAT (strict JSON):
-{{
-    "general_info": {{
-        "Name of the Unit": "...",
-        "Constitution": "...",
-        ... (all fields found)
-    }},
-    "operating_statement": {{
-        "years": ["FY24 (Audited)", "FY25 (Estimated)", ...],
-        "rows": [
-            {{"particulars": "Revenue from Operations", "values": ["250.00", "950.00", ...]}},
-            {{"particulars": "Total Income", "values": ["250.00", "950.00", ...]}},
-            ... (all rows)
-        ]
-    }},
-    "balance_sheet": {{
-        "years": ["FY24 (Audited)", "FY25 (Estimated)", ...],
-        "rows": [
-            {{"particulars": "Share Capital", "values": ["100.00", "100.00", ...]}},
-            ... (all rows)
-        ]
-    }},
-    "cash_flow": {{
-        "years": ["FY24 (Audited)", "FY25 (Estimated)", ...],
-        "rows": [
-            {{"particulars": "Net Profit Before Tax", "values": ["-7.50", "133.00", ...]}},
-            ... (all rows)
-        ]
-    }}
-}}
+                   3. Operating Performance (P&L)
+                   gross_turnover: Total Operating Income / Sales.
+                   ebitda: Operating Profit before interest, tax, dep, amort.
+                   interest_expense: Total finance charges and interest costs.
+                   pat: Profit After Tax.
+                   cash_profit: PAT + Depreciation.
+                   depreciation: Depreciation and Amortization.
 
-## CRITICAL RULES:
-1. Extract EVERY row that exists in the source data - do not skip any
-2. Preserve exact row labels/names as they appear
-3. Preserve numeric values exactly as formatted (including negatives, decimals)
-4. If a value is missing or N/A, use "0.00" or the appropriate placeholder
-5. Return ONLY valid JSON, no markdown or explanations
-6. The number of values in each row MUST match the number of years
+                   4. Financial Position (Balance Sheet)
+                   tangible_net_worth: Capital + Reserves - Intangible Assets.
+                   total_debt: Long Term Borrowings + Short Term Borrowings.
+                   net_working_capital: Current Assets - Current Liabilities.
+                   unsecured_loans: Loans from promoters/family (Quasi-equity).
+                   cash_and_bank_balance: Liquidity available on hand.
+                   
+                   5. Raw Components (REQUIRED for Data Model)
+                   current_assets: Total Current Assets.
+                   current_liabilities: Total Current Liabilities.
+                   fixed_assets: Net Fixed Assets / PPE.
+                   long_term_debt: Long Term Borrowings (excluding current maturity).
+                   short_term_debt: Short Term Borrowings / Working Capital Limits.
 
-Return ONLY the JSON object:"""
+                   Return ONLY the JSON array.
+                   """
 
         # Build content based on input type
         if pdf_bytes:
@@ -1017,6 +1009,7 @@ Return ONLY the JSON object:"""
         elif raw_text:
             # Use extracted text (from Excel or other sources)
             print(f"📝 Using extracted text for CMA analysis ({len(raw_text)} chars)")
+            print(f"📄 Raw text sample (first 1000 chars):\n{raw_text[:1000]}\n... (truncated)")
             contents = f"{prompt}\n\n## RAW TEXT:\n{raw_text}"
         else:
             raise HTTPException(status_code=400, detail="Either pdf_bytes or raw_text must be provided for CMA extraction")
@@ -1057,19 +1050,78 @@ Return ONLY the JSON object:"""
             response_text = response_text[:-3]
         response_text = response_text.strip()
         
-        cma_data = json.loads(response_text)
         
-        # Validate structure
-        required_keys = ["general_info", "operating_statement", "balance_sheet", "cash_flow"]
-        for key in required_keys:
-            if key not in cma_data:
-                cma_data[key] = {"years": [], "rows": []} if key != "general_info" else {}
+        print(f"🔍 Raw Gemini JSON text:\n{response_text[:1500]}...") # Log first 1500 chars 
+        extracted_list = json.loads(response_text)
+        print(f"✅ Parsed JSON list with {len(extracted_list) if isinstance(extracted_list, list) else 'NOT A LIST'} items")
         
-        print(f"✅ CMA data extracted successfully")
-        print(f"   - General Info fields: {len(cma_data.get('general_info', {}))}")
-        print(f"   - Operating Statement rows: {len(cma_data.get('operating_statement', {}).get('rows', []))}")
-        print(f"   - Balance Sheet rows: {len(cma_data.get('balance_sheet', {}).get('rows', []))}")
-        print(f"   - Cash Flow rows: {len(cma_data.get('cash_flow', {}).get('rows', []))}")
+        # Helper to safely get numeric value (handles None/null)
+        def safe_float(val, default=0.0):
+            if val is None:
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+        
+        # Post-Processing: Convert list to Structured Dict for CreditService
+        cma_data = {
+            "general_info": {"extracted_from": "gemini_schema_v2"},
+            "audited_financials": [],
+            "provisional_financials": None,
+            "projected_financials": []
+        }
+        
+        if isinstance(extracted_list, list):
+            for idx, item in enumerate(extracted_list):
+                print(f"📋 Raw item[{idx}]: {json.dumps(item, default=str)[:500]}")
+                
+                # Map keys to YearData format with safe_float for null handling
+                mapped_item = {
+                    "year": item.get("year") or "Unknown",
+                    "revenue": safe_float(item.get("gross_turnover")),
+                    "pat": safe_float(item.get("pat")),
+                    # Fallback for depreciation
+                    "depreciation": safe_float(item.get("depreciation")) or (safe_float(item.get("cash_profit")) - safe_float(item.get("pat"))),
+                    "interest_expense": safe_float(item.get("interest_expense")),
+                    "current_assets": safe_float(item.get("current_assets")),
+                    "current_liabilities": safe_float(item.get("current_liabilities")),
+                    "long_term_debt": safe_float(item.get("long_term_debt")),
+                    "short_term_debt": safe_float(item.get("short_term_debt")),
+                    "tangible_net_worth": safe_float(item.get("tangible_net_worth")),
+                    "fixed_assets": safe_float(item.get("fixed_assets")),
+                    
+                    # --- CRITICAL: Map Ratios so they appear in Frontend ---
+                    "dscr": safe_float(item.get("dscr")),
+                    "iscr": safe_float(item.get("iscr")),
+                    "current_ratio": safe_float(item.get("current_ratio")),
+                    "tol_tnw": safe_float(item.get("tol_tnw")),
+                    "debt_equity_ratio": safe_float(item.get("debt_equity_ratio")),
+                    
+                    "tier": "audited" # Default
+                }
+                
+                # Determine Tier
+                raw_type = str(item.get("type", "")).lower()
+                if "audited" in raw_type:
+                    mapped_item["tier"] = "audited"
+                    cma_data["audited_financials"].append(mapped_item)
+                elif "provisional" in raw_type or "estimated" in raw_type:
+                    mapped_item["tier"] = "provisional"
+                    cma_data["provisional_financials"] = mapped_item
+                elif "projected" in raw_type:
+                    mapped_item["tier"] = "projected"
+                    cma_data["projected_financials"].append(mapped_item)
+                else:
+                    # Fallback based on year string?
+                    cma_data["audited_financials"].append(mapped_item)
+        
+        print(f"✅ CMA data extracted successfully (v2 List Mode)")
+        print(f"   - Audited Years: {len(cma_data['audited_financials'])}")
+        print(f"   - Projected Years: {len(cma_data['projected_financials'])}")
+        # Log a sample year to verify ratios are present
+        if cma_data['audited_financials']:
+             print(f"   - Sample Audited Data: {cma_data['audited_financials'][0]}")
         
         return cma_data
         
@@ -1077,10 +1129,158 @@ Return ONLY the JSON object:"""
         print(f"❌ JSON parsing error in CMA extraction: {str(e)}")
         return {
             "general_info": {},
-            "operating_statement": {"years": [], "rows": []},
-            "balance_sheet": {"years": [], "rows": []},
-            "cash_flow": {"years": [], "rows": []}
+            "audited_financials": [],
+            "projected_financials": [],
+            "provisional_financials": None
         }
     except Exception as e:
         print(f"❌ Error extracting CMA data: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to extract CMA data: {str(e)}")
+
+async def augment_cma_with_web_search(cma_text: str, cma_structured: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    For CMA-only uploads, use Google Search to find company details and market info.
+    Returns a partial Memo structure (Overview, Market, Products).
+    """
+    try:
+        # 1. Identify Company Name/Context
+        company_name = "Unknown Company"
+        general_info = {}
+        
+        if cma_structured:
+             general_info = cma_structured.get('general_info', {})
+             company_name = general_info.get('Name of the Unit') or general_info.get('Name') or general_info.get('borrower_name') or "Unknown Company"
+        
+        # If name is unknown, we can't search effectively
+        if company_name == "Unknown Company":
+            # Try regex on raw text as fallback
+            match = re.search(r"(?:Name of the Unit|Borrower Name|Name)\s*[:\-\s]\s*([^\n]+)", cma_text, re.IGNORECASE)
+            if match:
+                company_name = match.group(1).strip()
+
+        print(f"🔍 Performing Deep Web-Augmented Analysis for: {company_name}")
+
+        prompt = f"""
+        You are an elite Investment Banker and Credit Analyst. You are analyzing a company named "{company_name}" based on a CMA report and Web Research.
+
+        **TARGET ENTITY**: {company_name}
+        **KNOWN CONTEXT**: {json.dumps(general_info, indent=2)}
+
+        **MISSION**:
+        Perform a comprehensive web search to build an Investment Memo profile. 
+        You MUST fill in all fields. If specific private data is not available, you MUST:
+        1. Infer reasonable estimates based on the company's size, location, and industry sector.
+        2. Use Industry Intelligence to populate Market Analysis (TAM/SAM, Growth Rates).
+        3. Identify 3-5 likely competitors in the same region or sector.
+
+        **REQUIRED OUTPUT SECTIONS**:
+
+        1. **COMPANY OVERVIEW**: 
+           - Search for the company website, LinkedIn, and business directories (Zauba Corp, Indiamart).
+           - Identify Promoters/Directors.
+           - Determine exact Business Model (B2B/B2C, Manufacturing vs Trading).
+
+        2. **MARKET ANALYSIS (CRITICAL)**:
+           - Define the Industry Sector (e.g., "Textile Manufacturing in Gujarat" or "Auto Components").
+           - ESTIMATE the Total Addressable Market (TAM) for this sector in India. (e.g. "Indian Textile Market is $150B...").
+           - ESTIMATE Growth Rate (CAGR).
+           - Identify granular Sub-segment opportunities.
+
+        3. **COMPETITION**:
+           - List specific competitor names. 
+           - If private, list larger public proxies or typical local competitors.
+           - Estimate their revenue/scale if possible.
+
+        **JSON OUTPUT FORMAT**:
+        {{
+            "company_overview": {{
+                "name": "{company_name}",
+                "sector": "Specific Sector",
+                "description": "Comprehensive description...",
+                "founders": [
+                    {{ "name": "Name 1", "designation": "Director", "background": "Experience..." }},
+                    {{ "name": "Name 2", "designation": "Director" }}
+                ],
+                "business_model": [
+                   {{
+                       "revenue_streams": "Primary Revenue Source",
+                       "description": " Detailed explanation...",
+                       "target_audience": "Target Customer Profile"
+                   }}
+                ],
+                "establishment_year": "YYYY",
+                "location": "City, State",
+                "technologies_used": "Relevant tech/machinery...",
+                "key_problems_solved": ["Problem 1", "Problem 2"]
+            }},
+            "products_and_services": [
+                {{
+                    "name": "Core Product/Service",
+                    "description": "Details...",
+                    "revenue_share": "High/Medium/Low"
+                }}
+            ],
+            "market_analysis": {{
+                "industry_size_and_growth": {{
+                    "total_addressable_market": {{ "name": "Indian Market Sector", "value": "₹XX,XXX Cr", "cagr": "XX%", "source": "Industry Reports" }},
+                    "serviceable_obtainable_market": {{ "name": "Regional/Target Market", "value": "₹X,XXX Cr", "cagr": "XX%", "projection": "Positive" }},
+                    "commentary": "Detailed industry trends, growth drivers, and headwinds..."
+                }},
+                "sub_segment_opportunities": ["Opportunity 1", "Opportunity 2", "Opportunity 3"],
+                "competitor_details": [
+                    {{
+                        "name": "Competitor 1",
+                        "headquarters": "Location",
+                        "revenue_streams": "Similar products",
+                        "market_share": "Leading/Niche",
+                        "strategic_focus": "Differentiation factor"
+                    }},
+                    {{
+                        "name": "Competitor 2",
+                        "headquarters": "Location"
+                    }}
+                ],
+                "reports": [
+                    {{ "title": "Index Sector Report 2024", "source_name": "IBEF/Crisil", "summary": "Sector outlook...", "source_url": "https://example.com" }}
+                ]
+            }},
+            "competition": {{
+                 "competitive_advantage": "Key strengths vs peers",
+                 "market_position": "Market Leader / Challenger / Niche Player"
+            }}
+        }}
+        """
+
+        # Configure with Search Tool
+        tools = [Tool(google_search=GoogleSearch())]
+        config = GenerateContentConfig(
+            temperature=0.4, # Slightly higher for creative inference
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=8192, # Allow long responses
+            response_mime_type="application/json",
+            tools=tools
+        )
+
+        response = await generate_with_fallback(
+            contents=prompt,
+            config=config,
+            models=MODELS_PRO
+        )
+
+        return json.loads(response.text)
+
+    except Exception as e:
+        print(f"Error in Deep Web-Augmented Analysis: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return skeleton with Company Name at least
+        return {
+            "company_overview": { 
+                "name": company_name, 
+                "description": f"Could not retrieve deep analysis. Error: {str(e)}",
+                "sector": "Unknown"
+            },
+            "market_analysis": {},
+            "products_and_services": []
+        }

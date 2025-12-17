@@ -7,7 +7,7 @@ if settings.FIREBASE_SERVICE_ACCOUNT_PATH:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import deals, interviews, investor_chat, auth
+from routers import deals, interviews, investor_chat, auth, credit
 import firebase_admin
 from firebase_admin import credentials
 
@@ -32,6 +32,18 @@ app.include_router(deals.router)
 app.include_router(interviews.router)
 app.include_router(investor_chat.router)
 app.include_router(auth.router)
+app.include_router(credit.router)
+
+# Serve local uploads for fallback
+from fastapi.staticfiles import StaticFiles
+import os
+from config.settings import settings
+
+# Ensure upload directory exists
+os.makedirs(settings.LOCAL_UPLOAD_DIR, exist_ok=True)
+
+# Mount /uploads endpoint
+app.mount(f"/{settings.LOCAL_UPLOAD_DIR}", StaticFiles(directory=settings.LOCAL_UPLOAD_DIR), name="uploads")
 
 @app.get("/health")
 async def health_check():

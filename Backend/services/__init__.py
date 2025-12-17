@@ -1,5 +1,5 @@
 from .document_ai import extract_text_from_pdf, extract_metadata_from_text
-from .gemini_service import analyze_with_gemini, chat_with_ai, recalculate_risk_and_conclusion, extract_cma_data, verify_claims_with_google
+from .gemini_service import analyze_with_gemini, chat_with_ai, recalculate_risk_and_conclusion, extract_cma_data, verify_claims_with_google, augment_cma_with_web_search
 from .storage_service import upload_to_gcs, generate_deal_id
 from .email_service import send_interview_email
 from .word_service import create_word_document
@@ -23,5 +23,6 @@ __all__ = [
     'chat_with_founder',
     'generate_investment_decision',
     'extract_cma_data',
-    'verify_claims_with_google'
+    'verify_claims_with_google',
+    'augment_cma_with_web_search'
 ]

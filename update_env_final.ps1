@@ -1,0 +1,14 @@
+
+$Content = @"
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+NEXT_PUBLIC_FIREBASE_API_KEY=AIzaSyBVB865VI4-DL0fgn9uE8NWMK8bH3_Pb8A
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=lenderai-new-8d2a.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=lenderai-new-8d2a
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=lenderai-new-8d2a.firebasestorage.app
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=292811796106
+NEXT_PUBLIC_FIREBASE_APP_ID=1:292811796106:web:fc661231e9e3834d4e0773
+NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=G-SKRCRR294M
+"@
+
+Set-Content -Path "f:\Icic\Frontend\.env.local" -Value $Content -Force
+Write-Host "Updated .env.local with correct Firebase config"

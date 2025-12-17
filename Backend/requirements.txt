@@ -19,3 +19,4 @@ sib-api-v3-sdk
 firebase-admin
 pandas
 openpyxl
+xlrd
